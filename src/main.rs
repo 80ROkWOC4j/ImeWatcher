@@ -69,8 +69,7 @@ fn main() -> windows::core::Result<()> {
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
 
-        // Initial update
-        ime::update_ime_lang();
+        // Initial update removed (handled in WM_CREATE)
 
         let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWDEFAULT);
 

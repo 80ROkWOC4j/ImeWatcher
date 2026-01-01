@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::UI::Shell::{
@@ -110,58 +109,4 @@ impl TrayIcon {
             _ => {}
         }
     }
-}
-
-// Global instance management using thread_local
-thread_local! {
-    static TRAY_ICON: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
-}
-
-pub fn init(hwnd: HWND) {
-    TRAY_ICON.with(|tray| {
-        *tray.borrow_mut() = Some(TrayIcon::new(hwnd));
-    });
-}
-
-// Use try_borrow_mut to avoid re-entrancy panics (RefCell already borrowed)
-// which can happen if Win32 API calls inside the handler trigger more messages.
-pub fn handle_message(message: u32, lparam: LPARAM) {
-    TRAY_ICON.with(|tray| {
-        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
-            if let Some(tray) = tray_guard.as_mut() {
-                tray.handle_message(message, lparam);
-            }
-        }
-    });
-}
-
-pub fn handle_command(command_id: u32) {
-    TRAY_ICON.with(|tray| {
-        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
-            if let Some(tray) = tray_guard.as_mut() {
-                tray.handle_command(command_id);
-            }
-        }
-    });
-}
-
-pub fn minimize() {
-    TRAY_ICON.with(|tray| {
-        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
-            if let Some(tray) = tray_guard.as_mut() {
-                tray.minimize();
-            }
-        }
-    });
-}
-
-#[allow(dead_code)]
-pub fn restore() {
-    TRAY_ICON.with(|tray| {
-        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
-            if let Some(tray) = tray_guard.as_mut() {
-                tray.restore();
-            }
-        }
-    });
 }

@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::Globalization::{GetLocaleInfoW, LOCALE_SLANGUAGE};
@@ -14,12 +13,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const LOCALE_NAME_MAX_LENGTH: usize = 85;
 const IMC_GET_OPEN_STATUS: WPARAM = WPARAM(0x0005);
 
-struct LanguageTracker {
+pub struct LanguageTracker {
     queue: VecDeque<u16>,
 }
 
 impl LanguageTracker {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             queue: VecDeque::new(),
         }
@@ -42,10 +41,37 @@ impl LanguageTracker {
     fn current(&self) -> u16 {
         *self.queue.back().unwrap_or(&0x0409) // Default to English (0x0409) if empty
     }
-}
 
-thread_local! {
-    static TRACKER: RefCell<LanguageTracker> = RefCell::new(LanguageTracker::new());
+    pub fn check_and_update(&mut self) {
+        // Fix: Wrap WPARAM/LPARAM in Some() as required by windows crate 0.62+
+        let status = unsafe {
+            let hwnd = GetForegroundWindow();
+            let h_ime = ImmGetDefaultIMEWnd(hwnd);
+            SendMessageW(
+                h_ime,
+                WM_IME_CONTROL,
+                Some(IMC_GET_OPEN_STATUS),
+                Some(LPARAM(0)),
+            )
+        };
+        let lang = get_keyboard_layout();
+    
+        let status_val = status.0 as u32;
+    
+        if status_val == IME_CMODE_NATIVE.0 {
+            self.update(lang);
+        } else if status_val == IME_CMODE_ALPHANUMERIC.0 {
+            self.update(0x0409); // English
+        } else {
+            self.update(0x0409); // Default
+        }
+    
+        if self.is_changed() {
+            let current_lang = self.current();
+            println!("{}", get_lang_string_from(current_lang));
+            send_ime_changed_event_to_keyboard();
+        }
+    }
 }
 
 fn get_keyboard_layout() -> u16 {
@@ -74,37 +100,3 @@ fn send_ime_changed_event_to_keyboard() {
     // TODO: Implement actual keyboard communication
 }
 
-pub fn update_ime_lang() {
-    // Fix: Wrap WPARAM/LPARAM in Some() as required by windows crate 0.62+
-    let status = unsafe {
-        let hwnd = GetForegroundWindow();
-        let h_ime = ImmGetDefaultIMEWnd(hwnd);
-        SendMessageW(
-            h_ime,
-            WM_IME_CONTROL,
-            Some(IMC_GET_OPEN_STATUS),
-            Some(LPARAM(0)),
-        )
-    };
-    let lang = get_keyboard_layout();
-
-    let status_val = status.0 as u32;
-
-    TRACKER.with(|tracker_cell| {
-        let mut tracker = tracker_cell.borrow_mut();
-
-        if status_val == IME_CMODE_NATIVE.0 {
-            tracker.update(lang);
-        } else if status_val == IME_CMODE_ALPHANUMERIC.0 {
-            tracker.update(0x0409); // English
-        } else {
-            tracker.update(0x0409); // Default
-        }
-
-        if tracker.is_changed() {
-            let current_lang = tracker.current();
-            println!("{}", get_lang_string_from(current_lang));
-            send_ime_changed_event_to_keyboard();
-        }
-    });
-}
