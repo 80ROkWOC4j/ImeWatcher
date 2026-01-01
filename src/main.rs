@@ -50,7 +50,7 @@ fn main() -> windows::core::Result<()> {
 
         let hwnd = hwnd?;
 
-        if hwnd.0 == std::ptr::null_mut() {
+        if hwnd.0.is_null() {
             return Ok(());
         }
 
@@ -80,10 +80,10 @@ fn main() -> windows::core::Result<()> {
             DispatchMessageW(&msg);
         }
 
-        if system::KEYBOARD_HOOK.0 != std::ptr::null_mut() {
+        if !system::KEYBOARD_HOOK.0.is_null() {
             let _ = UnhookWindowsHookEx(system::KEYBOARD_HOOK);
         }
-        if win_event_hook.0 != std::ptr::null_mut() {
+        if !win_event_hook.0.is_null() {
             let _ = UnhookWinEvent(win_event_hook);
         }
     }

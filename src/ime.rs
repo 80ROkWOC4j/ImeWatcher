@@ -48,7 +48,7 @@ thread_local! {
     static TRACKER: RefCell<LanguageTracker> = RefCell::new(LanguageTracker::new());
 }
 
-unsafe fn get_keyboard_layout() -> u16 {
+fn get_keyboard_layout() -> u16 {
     let hkl = unsafe {
         let thread_id = GetWindowThreadProcessId(GetForegroundWindow(), None);
         GetKeyboardLayout(thread_id)
@@ -74,7 +74,7 @@ fn send_ime_changed_event_to_keyboard() {
     // TODO: Implement actual keyboard communication
 }
 
-pub unsafe fn update_ime_lang() {
+pub fn update_ime_lang() {
     // Fix: Wrap WPARAM/LPARAM in Some() as required by windows crate 0.62+
     let status = unsafe {
         let hwnd = GetForegroundWindow();
@@ -86,7 +86,7 @@ pub unsafe fn update_ime_lang() {
             Some(LPARAM(0)),
         )
     };
-    let lang = unsafe { get_keyboard_layout() };
+    let lang = get_keyboard_layout();
 
     let status_val = status.0 as u32;
 
