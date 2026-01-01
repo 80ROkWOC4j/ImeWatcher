@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
+use std::fmt::{Display, Formatter};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::Globalization::{GetLocaleInfoW, LOCALE_SLANGUAGE};
 use windows::Win32::UI::Input::Ime::{
-    IME_CMODE_ALPHANUMERIC, IME_CMODE_NATIVE, ImmGetDefaultIMEWnd,
+    IME_CMODE_ALPHANUMERIC, IME_CMODE_NATIVE, IME_CMODE_HANGEUL, IME_CMODE_HANGUL, IME_CONVERSION_MODE, ImmGetDefaultIMEWnd,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -13,33 +13,58 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const LOCALE_NAME_MAX_LENGTH: usize = 85;
 const IMC_GET_OPEN_STATUS: WPARAM = WPARAM(0x0005);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LangId(u16);
+
+impl LangId {
+    const fn english() -> Self {
+        Self(0x0409)
+    }
+}
+
+impl Display for LangId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let lcid = self.0 as u32;
+
+        let mut buffer = [0u16; LOCALE_NAME_MAX_LENGTH];
+        let len = unsafe { GetLocaleInfoW(lcid, LOCALE_SLANGUAGE, Some(&mut buffer)) };
+
+        // os 언어에 따라 다른 결과가 나옴
+        if len > 0 {
+            f.write_str(&String::from_utf16_lossy(&buffer[..(len as usize - 1)]))
+        } else {
+            f.write_str("Unknown Language")
+        }
+    }
+}
+
 pub struct LanguageTracker {
-    queue: VecDeque<u16>,
+    current: Option<LangId>,
+    previous: Option<LangId>,
 }
 
 impl LanguageTracker {
     pub fn new() -> Self {
         Self {
-            queue: VecDeque::new(),
+            current: None,
+            previous: None,
         }
     }
 
-    fn update(&mut self, new_lang: u16) {
-        if self.queue.len() >= 2 {
-            self.queue.pop_front();
-        }
-        self.queue.push_back(new_lang);
+    fn update(&mut self, new_lang: LangId) {
+        self.previous = self.current;
+        self.current = Some(new_lang);
     }
 
     fn is_changed(&self) -> bool {
-        if self.queue.is_empty() {
-            return false;
+        match (self.previous, self.current) {
+            (Some(prev), Some(curr)) => prev != curr,
+            _ => false,
         }
-        self.queue.front() != self.queue.back()
     }
 
-    fn current(&self) -> u16 {
-        *self.queue.back().unwrap_or(&0x0409) // Default to English (0x0409) if empty
+    fn current(&self) -> LangId {
+        self.current.unwrap_or(LangId::english())
     }
 
     pub fn check_and_update(&mut self) {
@@ -54,18 +79,19 @@ impl LanguageTracker {
                 Some(LPARAM(0)),
             )
         };
-        let lang = get_keyboard_layout();
-    
-        let status_val = status.0 as u32;
-    
-        if status_val == IME_CMODE_NATIVE.0 {
-            self.update(lang);
-        } else if status_val == IME_CMODE_ALPHANUMERIC.0 {
-            self.update(0x0409); // English
-        } else {
-            self.update(0x0409); // Default
+
+        match IME_CONVERSION_MODE(status.0 as u32) {
+            IME_CMODE_NATIVE => {
+                self.update(get_keyboard_layout());
+            }
+            IME_CMODE_ALPHANUMERIC => {
+                self.update(LangId::english()); // English
+            }
+            _ => {
+                self.update(LangId::english()); // Default
+            }
         }
-    
+
         if self.is_changed() {
             let current_lang = self.current();
             println!("{}", get_lang_string_from(current_lang));
@@ -74,17 +100,17 @@ impl LanguageTracker {
     }
 }
 
-fn get_keyboard_layout() -> u16 {
+fn get_keyboard_layout() -> LangId {
     let hkl = unsafe {
         let thread_id = GetWindowThreadProcessId(GetForegroundWindow(), None);
         GetKeyboardLayout(thread_id)
     };
     let lang_id = (hkl.0 as usize & 0xFFFF) as u16;
-    lang_id
+    LangId(lang_id)
 }
 
-fn get_lang_string_from(lang_id: u16) -> String {
-    let lcid = (lang_id as u32) | ((0 as u32) << 16);
+fn get_lang_string_from(lang_id: LangId) -> String {
+    let lcid = lang_id.0 as u32;
 
     let mut buffer = [0u16; LOCALE_NAME_MAX_LENGTH];
     let len = unsafe { GetLocaleInfoW(lcid, LOCALE_SLANGUAGE, Some(&mut buffer)) };
@@ -100,3 +126,12 @@ fn send_ime_changed_event_to_keyboard() {
     // TODO: Implement actual keyboard communication
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn lang_id_print_test() {
+        println!("English: {}", LangId::english()); // 영어(미국)
+    }
+}
