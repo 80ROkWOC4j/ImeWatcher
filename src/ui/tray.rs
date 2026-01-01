@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::UI::Shell::{
@@ -73,7 +74,8 @@ impl TrayIcon {
     unsafe fn popup_menu(&self) {
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        let _ = TrackPopupMenu(self.tray_menu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, 0, self.hwnd, None);
+        // Fix: Pass Some(0) for nreserved
+        let _ = TrackPopupMenu(self.tray_menu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, Some(0), self.hwnd, None);
     }
 
     pub unsafe fn handle_message(&mut self, message: u32, lparam: LPARAM) {
@@ -100,27 +102,56 @@ impl TrayIcon {
     }
 }
 
-// Global instance management
-static mut TRAY_ICON: Option<TrayIcon> = None;
-
-pub unsafe fn init(hwnd: HWND) {
-    TRAY_ICON = Some(TrayIcon::new(hwnd));
+// Global instance management using thread_local
+thread_local! {
+    static TRAY_ICON: RefCell<Option<TrayIcon>> = RefCell::new(None);
 }
 
+pub unsafe fn init(hwnd: HWND) {
+    TRAY_ICON.with(|tray| {
+        *tray.borrow_mut() = Some(TrayIcon::new(hwnd));
+    });
+}
+
+// Use try_borrow_mut to avoid re-entrancy panics (RefCell already borrowed)
+// which can happen if Win32 API calls inside the handler trigger more messages.
 pub unsafe fn handle_message(message: u32, lparam: LPARAM) {
-    if let Some(tray) = TRAY_ICON.as_mut() {
-        tray.handle_message(message, lparam);
-    }
+    TRAY_ICON.with(|tray| {
+        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
+            if let Some(tray) = tray_guard.as_mut() {
+                tray.handle_message(message, lparam);
+            }
+        }
+    });
 }
 
 pub unsafe fn handle_command(command_id: u32) {
-    if let Some(tray) = TRAY_ICON.as_mut() {
-        tray.handle_command(command_id);
-    }
+    TRAY_ICON.with(|tray| {
+        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
+            if let Some(tray) = tray_guard.as_mut() {
+                tray.handle_command(command_id);
+            }
+        }
+    });
 }
 
 pub unsafe fn minimize() {
-    if let Some(tray) = TRAY_ICON.as_mut() {
-        tray.minimize();
-    }
+    TRAY_ICON.with(|tray| {
+        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
+            if let Some(tray) = tray_guard.as_mut() {
+                tray.minimize();
+            }
+        }
+    });
+}
+
+#[allow(dead_code)]
+pub unsafe fn restore() {
+    TRAY_ICON.with(|tray| {
+        if let Ok(mut tray_guard) = tray.try_borrow_mut() {
+            if let Some(tray) = tray_guard.as_mut() {
+                tray.restore();
+            }
+        }
+    });
 }

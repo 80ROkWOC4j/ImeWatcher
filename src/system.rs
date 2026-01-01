@@ -3,14 +3,18 @@ use windows::Win32::System::Console::{AllocConsole, FreeConsole};
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DefWindowProcW, GetForegroundWindow,
-    PostQuitMessage, HHOOK, SC_CLOSE, SC_MINIMIZE, WM_CLOSE, WM_COMMAND,
-    WM_CREATE, WM_DESTROY, WM_INPUTLANGCHANGE, WM_KEYDOWN, WM_KEYUP, WM_SYSCOMMAND,
+    PostQuitMessage, SC_CLOSE, SC_MINIMIZE, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    WM_DESTROY, WM_INPUTLANGCHANGE, WM_SYSCOMMAND, HHOOK, WM_KEYDOWN, WM_KEYUP,
 };
 
 use crate::ime;
 use crate::ui::tray;
 
 // Global hook handle needs to be stored somewhere accessible
+// Win32 hooks are inevitably global/static, so static mut is often used or AtomicPtr.
+// For HHOOK which is a pointer-like handle, AtomicPtr or specific Atomic types could be used,
+// but HHOOK is a struct wrapping a pointer.
+// We can use a simpler approach or ignore the warning for this specific legacy-style hook storage.
 pub static mut KEYBOARD_HOOK: HHOOK = HHOOK(std::ptr::null_mut());
 
 pub unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
@@ -19,7 +23,8 @@ pub unsafe extern "system" fn keyboard_proc(n_code: i32, w_param: WPARAM, l_para
             ime::update_ime_lang();
         }
     }
-    CallNextHookEx(KEYBOARD_HOOK, n_code, w_param, l_param)
+    // Note: CallNextHookEx expects Option<HHOOK> in recent windows versions
+    CallNextHookEx(Some(KEYBOARD_HOOK), n_code, w_param, l_param)
 }
 
 pub unsafe extern "system" fn win_event_proc_callback(

@@ -1,14 +1,16 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::Globalization::{GetLocaleInfoW, LOCALE_SLANGUAGE};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetDefaultIMEWnd, IME_CMODE_ALPHANUMERIC, IME_CMODE_NATIVE,
+    IME_CMODE_ALPHANUMERIC, IME_CMODE_NATIVE, ImmGetDefaultIMEWnd,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SendMessageW, WM_IME_CONTROL,
 };
 
+// https://learn.microsoft.com/ko-kr/windows/win32/intl/locale-name-constants
 const LOCALE_NAME_MAX_LENGTH: usize = 85;
 const IMC_GET_OPEN_STATUS: WPARAM = WPARAM(0x0005);
 
@@ -42,63 +44,67 @@ impl LanguageTracker {
     }
 }
 
-static mut TRACKER: Option<LanguageTracker> = None;
-
-fn get_tracker() -> &'static mut LanguageTracker {
-    unsafe {
-        if TRACKER.is_none() {
-            TRACKER = Some(LanguageTracker::new());
-        }
-        TRACKER.as_mut().unwrap()
-    }
+thread_local! {
+    static TRACKER: RefCell<LanguageTracker> = RefCell::new(LanguageTracker::new());
 }
 
 unsafe fn get_keyboard_layout() -> u16 {
-    let thread_id = GetWindowThreadProcessId(GetForegroundWindow(), None);
-    let hkl = GetKeyboardLayout(thread_id);
+    let hkl = unsafe {
+        let thread_id = GetWindowThreadProcessId(GetForegroundWindow(), None);
+        GetKeyboardLayout(thread_id)
+    };
     let lang_id = (hkl.0 as usize & 0xFFFF) as u16;
     lang_id
 }
 
-unsafe fn get_lang_string_from(lang_id: u16) -> String {
-    let lcid = (lang_id as u32) | ((0 as u32) << 16); 
+fn get_lang_string_from(lang_id: u16) -> String {
+    let lcid = (lang_id as u32) | ((0 as u32) << 16);
 
     let mut buffer = [0u16; LOCALE_NAME_MAX_LENGTH];
-    let len = GetLocaleInfoW(lcid, LOCALE_SLANGUAGE, Some(&mut buffer));
+    let len = unsafe { GetLocaleInfoW(lcid, LOCALE_SLANGUAGE, Some(&mut buffer)) };
 
     if len > 0 {
-        String::from_utf16_lossy(&buffer[..(len as usize - 1)]) 
+        String::from_utf16_lossy(&buffer[..(len as usize - 1)])
     } else {
         "Unknown Language".to_string()
     }
 }
 
-unsafe fn send_ime_changed_event_to_keyboard() {
+fn send_ime_changed_event_to_keyboard() {
     // TODO: Implement actual keyboard communication
 }
 
 pub unsafe fn update_ime_lang() {
-    let hwnd = GetForegroundWindow();
-    let h_ime = ImmGetDefaultIMEWnd(hwnd);
-    
-    let status = SendMessageW(h_ime, WM_IME_CONTROL, IMC_GET_OPEN_STATUS, LPARAM(0));
-    let lang = get_keyboard_layout();
-    
-    let tracker = get_tracker();
+    // Fix: Wrap WPARAM/LPARAM in Some() as required by windows crate 0.62+
+    let status = unsafe {
+        let hwnd = GetForegroundWindow();
+        let h_ime = ImmGetDefaultIMEWnd(hwnd);
+        SendMessageW(
+            h_ime,
+            WM_IME_CONTROL,
+            Some(IMC_GET_OPEN_STATUS),
+            Some(LPARAM(0)),
+        )
+    };
+    let lang = unsafe { get_keyboard_layout() };
 
     let status_val = status.0 as u32;
 
-    if status_val == IME_CMODE_NATIVE.0 {
-        tracker.update(lang);
-    } else if status_val == IME_CMODE_ALPHANUMERIC.0 {
-        tracker.update(0x0409); // English
-    } else {
-        tracker.update(0x0409); // Default
-    }
+    TRACKER.with(|tracker_cell| {
+        let mut tracker = tracker_cell.borrow_mut();
 
-    if tracker.is_changed() {
-        let current_lang = tracker.current();
-        println!("{}", get_lang_string_from(current_lang));
-        send_ime_changed_event_to_keyboard();
-    }
+        if status_val == IME_CMODE_NATIVE.0 {
+            tracker.update(lang);
+        } else if status_val == IME_CMODE_ALPHANUMERIC.0 {
+            tracker.update(0x0409); // English
+        } else {
+            tracker.update(0x0409); // Default
+        }
+
+        if tracker.is_changed() {
+            let current_lang = tracker.current();
+            println!("{}", get_lang_string_from(current_lang));
+            send_ime_changed_event_to_keyboard();
+        }
+    });
 }

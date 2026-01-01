@@ -44,7 +44,7 @@ fn main() -> windows::core::Result<()> {
             300,
             None,
             None,
-            instance,
+            Some(instance.into()), // Fix: Wrap in Some() and convert HMODULE to HINSTANCE
             None,
         );
 
@@ -56,7 +56,8 @@ fn main() -> windows::core::Result<()> {
 
         WINDOW_HANDLE = hwnd;
 
-        system::KEYBOARD_HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(system::keyboard_proc), instance, 0)?;
+        // Fix: Wrap instance in Some() and convert
+        system::KEYBOARD_HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(system::keyboard_proc), Some(instance.into()), 0)?;
 
         let win_event_hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
