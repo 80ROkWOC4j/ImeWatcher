@@ -2,7 +2,7 @@ use std::fmt::{Display, Formatter};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::Globalization::{GetLocaleInfoW, LOCALE_SLANGUAGE};
 use windows::Win32::UI::Input::Ime::{
-    IME_CMODE_ALPHANUMERIC, IME_CMODE_NATIVE, IME_CMODE_HANGEUL, IME_CMODE_HANGUL, IME_CONVERSION_MODE, ImmGetDefaultIMEWnd,
+    IME_CMODE_ALPHANUMERIC, IME_CMODE_NATIVE, IME_CONVERSION_MODE, ImmGetDefaultIMEWnd,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{

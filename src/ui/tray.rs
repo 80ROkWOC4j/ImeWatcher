@@ -1,17 +1,15 @@
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NIF_ICON, NIF_MESSAGE, NIF_TIP,
-    NOTIFYICONDATAW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyWindow, GetCursorPos, LoadIconW,
-    ShowWindow, TrackPopupMenu, IDI_APPLICATION, MF_STRING,
-    SW_HIDE, SW_RESTORE, TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WM_LBUTTONDBLCLK,
-    WM_RBUTTONDOWN,
+    AppendMenuW, CreatePopupMenu, DestroyWindow, GetCursorPos, IDI_APPLICATION, LoadIconW,
+    MF_STRING, SW_HIDE, SW_RESTORE, ShowWindow, TPM_BOTTOMALIGN, TPM_RIGHTALIGN, TrackPopupMenu,
+    WM_LBUTTONDBLCLK, WM_RBUTTONDOWN,
 };
+use windows::core::PCWSTR;
 
-use crate::utils::{to_wstring, PROGRAM_NAME, WM_TRAY_CALLBACK};
+use crate::utils::{PROGRAM_NAME, WM_TRAY_CALLBACK, to_wstring};
 
 pub struct TrayIcon {
     notify_icon_data: NOTIFYICONDATAW,
@@ -81,7 +79,15 @@ impl TrayIcon {
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
             // Fix: Pass Some(0) for nreserved
-            let _ = TrackPopupMenu(self.tray_menu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, Some(0), self.hwnd, None);
+            let _ = TrackPopupMenu(
+                self.tray_menu,
+                TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
+                pt.x,
+                pt.y,
+                Some(0),
+                self.hwnd,
+                None,
+            );
         }
     }
 
@@ -97,11 +103,13 @@ impl TrayIcon {
     }
 
     pub fn handle_command(&mut self, command_id: u32) {
-         match command_id {
-            1 => { // Settings
+        match command_id {
+            1 => {
+                // Settings
                 self.restore();
             }
-            2 => { // Exit
+            2 => {
+                // Exit
                 unsafe {
                     let _ = DestroyWindow(self.hwnd);
                 }

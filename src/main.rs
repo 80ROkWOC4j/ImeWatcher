@@ -3,18 +3,17 @@ mod system;
 mod ui;
 mod utils;
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DispatchMessageW, GetMessageW, RegisterClassW, ShowWindow,
-    TranslateMessage, CW_USEDEFAULT, EVENT_SYSTEM_FOREGROUND, MSG,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WNDCLASSW, WS_OVERLAPPEDWINDOW,
-    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    CW_USEDEFAULT, CreateWindowExW, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetMessageW, MSG,
+    RegisterClassW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
+    WH_KEYBOARD_LL, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
+use windows::core::PCWSTR;
 
-use crate::utils::{to_wstring, PROGRAM_NAME, PROGRAM_WINDOW};
+use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW, to_wstring};
 
 static mut WINDOW_HANDLE: HWND = HWND(std::ptr::null_mut());
 
@@ -57,7 +56,12 @@ fn main() -> windows::core::Result<()> {
         WINDOW_HANDLE = hwnd;
 
         // Fix: Wrap instance in Some() and convert
-        system::KEYBOARD_HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(system::keyboard_proc), Some(instance.into()), 0)?;
+        system::KEYBOARD_HOOK = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(system::keyboard_proc),
+            Some(instance.into()),
+            0,
+        )?;
 
         let win_event_hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
@@ -71,7 +75,10 @@ fn main() -> windows::core::Result<()> {
 
         // Initial update removed (handled in WM_CREATE)
 
-        let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWDEFAULT);
+        let _ = ShowWindow(
+            hwnd,
+            windows::Win32::UI::WindowsAndMessaging::SW_SHOWDEFAULT,
+        );
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
