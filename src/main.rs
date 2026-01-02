@@ -1,4 +1,5 @@
 mod ime;
+mod hid;
 mod system;
 mod ui;
 mod utils;
