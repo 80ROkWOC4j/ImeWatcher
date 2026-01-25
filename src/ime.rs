@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::Globalization::{GetLocaleInfoW, LOCALE_SLANGUAGE};
@@ -16,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // https://learn.microsoft.com/en-us/previous-versions/windows/embedded/ms905959(v=msdn.10)
 const IMC_GET_OPEN_STATUS: WPARAM = WPARAM(0x0005);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct LangId(pub u16);
 
 // https://learn.microsoft.com/ko-kr/windows/win32/intl/language-identifiers 참고
@@ -45,20 +46,25 @@ impl Display for LangId {
 pub struct LanguageTracker {
     current: Option<LangId>,
     previous: Option<LangId>,
+    pub detected_langs: HashSet<LangId>,
 }
 
 impl LanguageTracker {
     pub fn new() -> Self {
+        let mut detected_langs = HashSet::new();
+        detected_langs.insert(LangId::english()); // Start with English
+
         Self {
             current: None,
             previous: None,
+            detected_langs,
         }
     }
 
     fn update(&mut self, new_lang: LangId) {
         self.previous = self.current;
         self.current = Some(new_lang);
-        self.current = Some(new_lang);
+        self.detected_langs.insert(new_lang);
         if self.is_changed() {
             println!("current lang: {new_lang}");
         }

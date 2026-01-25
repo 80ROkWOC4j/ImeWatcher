@@ -5,6 +5,9 @@ use hidapi::{DeviceInfo, HidApi, HidDevice};
 const QMK_RAW_USAGE_PAGE: u16 = 0xFF60;
 const QMK_RAW_USAGE: u16 = 0x61;
 
+// Custom Command ID for Layer Switch (User must implement this in QMK firmware)
+const CUSTOM_CMD_LAYER_SWITCH: u8 = 0x21;
+
 pub struct HidManager {
     api: HidApi,
     selected_device_path: Option<String>,
@@ -20,9 +23,6 @@ impl HidManager {
     }
 
     pub fn list_devices(&mut self) -> Vec<DeviceInfo> {
-        // Refresh devices? HidApi::new() refreshes.
-        // If we want to refresh, we might need to recreate HidApi or use refresh_devices() if available.
-        // rust-hidapi's HidApi::refresh_devices() scans again.
         let _ = self.api.refresh_devices();
 
         self.api
@@ -45,33 +45,96 @@ impl HidManager {
     }
 
     pub fn update_lighting(&self, lang_id: LangId) -> Result<(), String> {
-        let path_str = match &self.selected_device_path {
-            Some(p) => p,
-            None => return Err("No device selected".to_string()),
-        };
-
-        // Find the device info again to ensure it's still there (or just try open)
-        // rust-hidapi open needs a CString path, usually we use open_path
-        let device = self
-            .api
-            .open_path(
-                std::ffi::CString::new(path_str.as_str())
-                    .map_err(|_| "Invalid path")?
-                    .as_c_str(),
-            )
-            .map_err(|e| format!("Failed to open device: {}", e))?;
-
+        let device = self.open_selected_device()?;
         self.send_lighting_command(&device, lang_id)
     }
 
-    fn send_lighting_command(&self, device: &HidDevice, lang_id: LangId) -> Result<(), String> {
-        // 1. Check Connection & Protocol Version (Optional but good practice)
-        // Leaving out for brevity/performance unless necessary, or we can do it once on connect.
+    fn open_selected_device(&self) -> Result<HidDevice, String> {
+        let path_str = self
+            .selected_device_path
+            .as_ref()
+            .ok_or("No device selected")?;
+        let path = std::ffi::CString::new(path_str.as_str()).map_err(|_| "Invalid path")?;
+        self.api
+            .open_path(&path)
+            .map_err(|e| format!("Failed to open device: {}", e))
+    }
 
+    pub fn get_protocol_version(&self) -> Result<u16, String> {
+        let device = self.open_selected_device()?;
+
+        let mut data = [0u8; 33];
+        data[0] = 0x00; // Report ID
+        data[1] = 0x01; // id_get_protocol_version
+
+        device.write(&data).map_err(|e| e.to_string())?;
+
+        let mut buf = [0u8; 33];
+        let res = device.read_timeout(&mut buf, 100).map_err(|e| e.to_string())?;
+
+        let offset = if res > 0 && buf[0] == 0x00 { 1 } else { 0 };
+
+        if res > offset + 2 {
+            if buf[offset] == 0x01 {
+                let version = u16::from_be_bytes([buf[offset+1], buf[offset+2]]);
+                Ok(version)
+            } else {
+                Err(format!("Unexpected response for protocol version: {:?}", &buf[..res]))
+            }
+        } else {
+            Err("No response from device for protocol version".to_string())
+        }
+    }
+
+    pub fn get_layer_count(&self) -> Result<u8, String> {
+        let device = self.open_selected_device()?;
+        
+        let mut data = [0u8; 33];
+        data[0] = 0x00; // Report ID
+        data[1] = 0x11; // id_dynamic_keymap_get_layer_count
+
+        device.write(&data).map_err(|e| e.to_string())?;
+
+        let mut buf = [0u8; 33];
+        let res = device.read_timeout(&mut buf, 100).map_err(|e| e.to_string())?;
+
+        let offset = if res > 0 && buf[0] == 0x00 { 1 } else { 0 };
+
+        if res > offset + 1 {
+            if buf[offset] == 0x11 {
+                Ok(buf[offset + 1])
+            } else {
+                Ok(buf[offset])
+            }
+        } else {
+            Err("No response from device for get_layer_count".to_string())
+        }
+    }
+
+    /// Sends a custom command to switch layers.
+    /// Requires QMK firmware modification to handle command ID 0x21.
+    pub fn set_layer_state(&self, layer_index: u8) -> Result<(), String> {
+        let device = self.open_selected_device()?;
+
+        let mut data = [0u8; 33];
+        data[0] = 0x00; // Report ID
+        data[1] = CUSTOM_CMD_LAYER_SWITCH; // Custom Command
+        data[2] = layer_index;
+
+        device.write(&data).map_err(|e| e.to_string())?;
+
+        // We don't expect a standard VIA response for a custom command unless programmed.
+        // Just checking if write succeeded is often enough, or we can read garbage.
+        let mut buf = [0u8; 33];
+        let _ = device.read_timeout(&mut buf, 20);
+
+        Ok(())
+    }
+
+    fn send_lighting_command(&self, device: &HidDevice, lang_id: LangId) -> Result<(), String> {
         let is_ime_active = lang_id != LangId::english();
         let brightness = if is_ime_active { 255 } else { 0 };
 
-        // VIA Protocol v3: id_set_keyboard_value (0x03)
         let commands = [
             (0x01, "Backlight Brightness"),
             (0x03, "RGB Matrix Brightness"),
@@ -87,9 +150,8 @@ impl HidManager {
 
             device.write(&data).map_err(|e| e.to_string())?;
 
-            // Read response (optional but recommended to clear buffer)
             let mut buf = [0u8; 33];
-            let _ = device.read_timeout(&mut buf, 20); // Short timeout
+            let _ = device.read_timeout(&mut buf, 20);
         }
 
         Ok(())
