@@ -341,91 +341,20 @@ impl AppUi {
         // Bind handlers for BOTH the main window and the tray message window.
 
         let weak: Weak<AppInner> = Rc::downgrade(&self.inner);
-        let handler_main = nwg::full_bind_event_handler(
-            &self.inner.window.handle,
-            move |evt, evt_data, handle| {
-                let Some(inner) = weak.upgrade() else {
-                    return;
-                };
-                use nwg::Event as E;
-
-                match evt {
-                    E::OnContextMenu if handle == inner.tray => {
-                        let (x, y) = nwg::GlobalCursor::position();
-                        inner.tray_menu.popup(x, y);
-                    }
-                    E::OnMenuItemSelected if handle == inner.tray_settings => {
-                        inner.window.set_visible(true);
-                    }
-                    E::OnMenuItemSelected if handle == inner.tray_exit => {
-                        AppInner::exit(&inner);
-                    }
-                    E::OnWindowClose if handle == inner.window => {
-                        if let nwg::EventData::OnWindowClose(close_data) = evt_data {
-                            close_data.close(false);
-                        }
-                        inner.window.set_visible(false);
-                    }
-                    E::OnButtonClick if handle == inner.sync_checkbox => {
-                        inner.toggle_sync();
-                    }
-                    E::OnComboxBoxSelection if handle == inner.device_combo => {
-                        inner.on_device_selection();
-                    }
-                    E::OnComboxBoxSelection => {
-                        inner.on_dynamic_combo_selection(&handle);
-                    }
-                    E::OnTimerTick if handle == inner.poll_timer => {
-                        inner.on_timer_tick();
-                    }
-                    _ => {}
-                }
-            },
-        );
+        let handler_main = nwg::full_bind_event_handler(&self.inner.window.handle, move |evt, evt_data, handle| {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            AppInner::handle_event(&inner, evt, evt_data, handle);
+        });
 
         let weak: Weak<AppInner> = Rc::downgrade(&self.inner);
-        let handler_tray = nwg::full_bind_event_handler(
-            &self.inner.tray_window.handle,
-            move |evt, evt_data, handle| {
-                let Some(inner) = weak.upgrade() else {
-                    return;
-                };
-                use nwg::Event as E;
-
-                match evt {
-                    E::OnContextMenu if handle == inner.tray => {
-                        let (x, y) = nwg::GlobalCursor::position();
-                        inner.tray_menu.popup(x, y);
-                    }
-                    E::OnMenuItemSelected if handle == inner.tray_settings => {
-                        inner.window.set_visible(true);
-                    }
-                    E::OnMenuItemSelected if handle == inner.tray_exit => {
-                        AppInner::exit(&inner);
-                    }
-                    // Main window events are harmless if they never fire here.
-                    E::OnWindowClose if handle == inner.window => {
-                        if let nwg::EventData::OnWindowClose(close_data) = evt_data {
-                            close_data.close(false);
-                        }
-                        inner.window.set_visible(false);
-                    }
-                    E::OnButtonClick if handle == inner.sync_checkbox => {
-                        inner.toggle_sync();
-                    }
-                    E::OnComboxBoxSelection if handle == inner.device_combo => {
-                        inner.on_device_selection();
-                    }
-                    E::OnComboxBoxSelection => {
-                        inner.on_dynamic_combo_selection(&handle);
-                    }
-                    E::OnTimerTick if handle == inner.poll_timer => {
-                        inner.on_timer_tick();
-                    }
-                    _ => {}
-                }
-            },
-        );
+        let handler_tray = nwg::full_bind_event_handler(&self.inner.tray_window.handle, move |evt, evt_data, handle| {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            AppInner::handle_event(&inner, evt, evt_data, handle);
+        });
 
         let mut handlers = self.inner.handlers.borrow_mut();
         handlers.push(handler_main);
@@ -451,6 +380,42 @@ impl AppUi {
 }
 
 impl AppInner {
+    fn handle_event(&self, evt: nwg::Event, evt_data: nwg::EventData, handle: nwg::ControlHandle) {
+        use nwg::Event as E;
+
+        match evt {
+            E::OnContextMenu if handle == self.tray => {
+                let (x, y) = nwg::GlobalCursor::position();
+                self.tray_menu.popup(x, y);
+            }
+            E::OnMenuItemSelected if handle == self.tray_settings => {
+                self.window.set_visible(true);
+            }
+            E::OnMenuItemSelected if handle == self.tray_exit => {
+                self.exit();
+            }
+            E::OnWindowClose if handle == self.window => {
+                if let nwg::EventData::OnWindowClose(close_data) = evt_data {
+                    close_data.close(false);
+                }
+                self.window.set_visible(false);
+            }
+            E::OnButtonClick if handle == self.sync_checkbox => {
+                self.toggle_sync();
+            }
+            E::OnComboxBoxSelection if handle == self.device_combo => {
+                self.on_device_selection();
+            }
+            E::OnComboxBoxSelection => {
+                self.on_dynamic_combo_selection(&handle);
+            }
+            E::OnTimerTick if handle == self.poll_timer => {
+                self.on_timer_tick();
+            }
+            _ => {}
+        }
+    }
+
     fn exit(&self) {
         if let Some(raw) = self.raw_handler.borrow_mut().take() {
             let _ = nwg::unbind_raw_event_handler(&raw);
