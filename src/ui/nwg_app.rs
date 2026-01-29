@@ -14,6 +14,60 @@ use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
 
 const RAW_HANDLER_ID: usize = 0x10000;
 
+const UI_PADDING: i32 = 16;
+const UI_COL_GAP: i32 = 16;
+const UI_ROW_GAP: i32 = 12;
+const UI_COL_W: i32 = 236;
+const UI_ROW_H: i32 = 32;
+const UI_CHECKBOX_H: i32 = 24;
+const UI_SECTION_TITLE_H: i32 = 18;
+const UI_SECTION_TITLE_GAP: i32 = 2;
+const UI_HEADER_H: i32 = 20;
+const UI_SECTION_GAP: i32 = 22;
+const UI_TABLE_ROWS_GAP_TOP: i32 = 12;
+const UI_WINDOW_H: i32 = 420;
+const UI_LABEL_H: i32 = 22;
+const UI_COMBO_Y_OFFSET: i32 = -4;
+
+#[derive(Clone, Copy)]
+struct Layout {
+    window_w: i32,
+    content_w: i32,
+    col1_x: i32,
+    col2_x: i32,
+    device_label_y: i32,
+    device_combo_y: i32,
+    sync_checkbox_y: i32,
+    header_y: i32,
+    rows_start_y: i32,
+}
+
+fn layout() -> Layout {
+    let content_w = (UI_COL_W * 2) + UI_COL_GAP;
+    let window_w = (UI_PADDING * 2) + content_w;
+
+    let col1_x = UI_PADDING;
+    let col2_x = UI_PADDING + UI_COL_W + UI_COL_GAP;
+
+    let device_label_y = UI_PADDING;
+    let device_combo_y = UI_PADDING + UI_SECTION_TITLE_H + UI_SECTION_TITLE_GAP;
+    let sync_checkbox_y = device_combo_y + UI_ROW_H + UI_ROW_GAP;
+    let header_y = sync_checkbox_y + UI_CHECKBOX_H + UI_SECTION_GAP;
+    let rows_start_y = header_y + UI_HEADER_H + UI_TABLE_ROWS_GAP_TOP;
+
+    Layout {
+        window_w,
+        content_w,
+        col1_x,
+        col2_x,
+        device_label_y,
+        device_combo_y,
+        sync_checkbox_y,
+        header_y,
+        rows_start_y,
+    }
+}
+
 #[derive(Clone)]
 pub struct AppUi {
     inner: Rc<AppInner>,
@@ -43,6 +97,12 @@ struct AppInner {
     #[allow(dead_code)]
     icon: nwg::Icon,
 
+    #[allow(dead_code)]
+    font_ui: Option<nwg::Font>,
+
+    #[allow(dead_code)]
+    font_header: Option<nwg::Font>,
+
     // Tray
     #[allow(dead_code)]
     tray_window: nwg::MessageWindow,
@@ -53,12 +113,16 @@ struct AppInner {
 
     // Main window + controls
     window: nwg::Window,
+
+    #[allow(dead_code)]
+    device_label: nwg::Label,
     device_combo: nwg::ComboBox<String>,
     sync_checkbox: nwg::CheckBox,
     #[allow(dead_code)]
     header_lang: nwg::Label,
     #[allow(dead_code)]
     header_layer: nwg::Label,
+
     poll_timer: nwg::AnimationTimer,
 
     // State
@@ -71,10 +135,40 @@ struct AppInner {
 
 impl AppUi {
     pub fn build() -> Result<Self, Box<dyn std::error::Error>> {
+        let l = layout();
+
         let mut icon = nwg::Icon::default();
         nwg::Icon::builder()
             .source_system(Some(nwg::OemIcon::WinLogo))
             .build(&mut icon)?;
+
+        // Font fallback:
+        // - Prefer Segoe UI when available.
+        // - Otherwise, let NWG/Win32 use the global default font.
+        let mut font_ui = nwg::Font::default();
+        let font_ui = if nwg::Font::builder()
+            .family("Segoe UI")
+            .size_absolute(14)
+            .build(&mut font_ui)
+            .is_ok()
+        {
+            Some(font_ui)
+        } else {
+            None
+        };
+
+        let mut font_header = nwg::Font::default();
+        let font_header = if nwg::Font::builder()
+            .family("Segoe UI")
+            .size_absolute(14)
+            .weight(600)
+            .build(&mut font_header)
+            .is_ok()
+        {
+            Some(font_header)
+        } else {
+            None
+        };
 
         let mut tray_window = nwg::MessageWindow::default();
         nwg::MessageWindow::builder().build(&mut tray_window)?;
@@ -107,40 +201,53 @@ impl AppUi {
         let mut window = nwg::Window::default();
         nwg::Window::builder()
             .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-            .size((420, 360))
+            .size((l.window_w, UI_WINDOW_H))
             .position((300, 300))
             .title(PROGRAM_WINDOW)
             .build(&mut window)?;
 
+        let mut device_label = nwg::Label::default();
+        nwg::Label::builder()
+            .parent(&window)
+            .position((l.col1_x, l.device_label_y))
+            .size((l.content_w, UI_SECTION_TITLE_H))
+            .text("Keyboard")
+            .font(font_header.as_ref())
+            .build(&mut device_label)?;
+
         let mut device_combo = nwg::ComboBox::<String>::default();
         nwg::ComboBox::builder()
             .parent(&window)
-            .position((12, 12))
-            .size((396, 28))
+            .position((l.col1_x, l.device_combo_y))
+            .size((l.content_w, UI_ROW_H))
+            .font(font_ui.as_ref())
             .build(&mut device_combo)?;
 
         let mut sync_checkbox = nwg::CheckBox::default();
         nwg::CheckBox::builder()
             .parent(&window)
-            .position((12, 48))
-            .size((396, 22))
-            .text("Enable IME-Layer Sync")
+            .position((l.col1_x, l.sync_checkbox_y))
+            .size((l.content_w, UI_CHECKBOX_H))
+            .text("Sync keyboard layer with IME")
+            .font(font_ui.as_ref())
             .build(&mut sync_checkbox)?;
 
         let mut header_lang = nwg::Label::default();
         nwg::Label::builder()
             .parent(&window)
-            .position((12, 84))
-            .size((190, 20))
+            .position((l.col1_x, l.header_y))
+            .size((UI_COL_W, UI_HEADER_H))
             .text("Language")
+            .font(font_header.as_ref())
             .build(&mut header_lang)?;
 
         let mut header_layer = nwg::Label::default();
         nwg::Label::builder()
             .parent(&window)
-            .position((218, 84))
-            .size((190, 20))
-            .text("Switch to layer")
+            .position((l.col2_x, l.header_y))
+            .size((UI_COL_W, UI_HEADER_H))
+            .text("Layer")
+            .font(font_header.as_ref())
             .build(&mut header_layer)?;
 
         let mut poll_timer = nwg::AnimationTimer::default();
@@ -184,12 +291,15 @@ impl AppUi {
 
         let inner = Rc::new(AppInner {
             icon,
+            font_ui,
+            font_header,
             tray_window,
             tray,
             tray_menu,
             tray_settings,
             tray_exit,
             window,
+            device_label,
             device_combo,
             sync_checkbox,
             header_lang,
@@ -407,6 +517,7 @@ impl AppInner {
     }
 
     fn on_ime_change(&self) {
+        let l = layout();
         let mut model = self.model.borrow_mut();
         let changed = model.ime_tracker.check_and_update();
 
@@ -420,22 +531,24 @@ impl AppInner {
             }
 
             let row_index = model.lang_rows.len() as i32;
-            let y_pos = 112 + (row_index * 28);
+            let y_pos = l.rows_start_y + (row_index * UI_ROW_H);
 
             let mut label = nwg::Label::default();
             nwg::Label::builder()
                 .parent(&self.window)
-                .position((12, y_pos))
-                .size((190, 22))
+                .position((l.col1_x, y_pos))
+                .size((UI_COL_W, UI_LABEL_H))
                 .text(&lang_id.to_string())
+                .font(self.font_ui.as_ref())
                 .build(&mut label)
                 .expect("label build");
 
             let mut combo = nwg::ComboBox::<String>::default();
             nwg::ComboBox::builder()
                 .parent(&self.window)
-                .position((218, y_pos - 2))
-                .size((190, 28))
+                .position((l.col2_x, y_pos + UI_COMBO_Y_OFFSET))
+                .size((UI_COL_W, UI_ROW_H))
+                .font(self.font_ui.as_ref())
                 .build(&mut combo)
                 .expect("combo build");
 
