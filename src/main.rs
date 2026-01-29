@@ -1,5 +1,6 @@
 mod hid;
 mod ime;
+mod logging;
 mod system;
 mod ui;
 mod utils;
@@ -13,6 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     use native_windows_gui as nwg;
+
+    logging::init();
 
     nwg::init()?;
     nwg::enable_visual_styles();

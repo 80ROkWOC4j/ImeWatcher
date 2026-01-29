@@ -6,7 +6,8 @@ build = "build.rs"
 
 [dependencies]
 hidapi = "2.6.4"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_System_LibraryLoader", "Win32_Globalization", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_System_SystemServices"] }
+log = "0.4.29"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_System_LibraryLoader", "Win32_Globalization", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_System_SystemServices", "Win32_System_SystemInformation"] }
 native-windows-gui = "1.0.13"
 
 [build-dependencies]

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use log::{debug, info, warn};
 use native_windows_gui as nwg;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
@@ -341,20 +342,26 @@ impl AppUi {
         // Bind handlers for BOTH the main window and the tray message window.
 
         let weak: Weak<AppInner> = Rc::downgrade(&self.inner);
-        let handler_main = nwg::full_bind_event_handler(&self.inner.window.handle, move |evt, evt_data, handle| {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            AppInner::handle_event(&inner, evt, evt_data, handle);
-        });
+        let handler_main = nwg::full_bind_event_handler(
+            &self.inner.window.handle,
+            move |evt, evt_data, handle| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                AppInner::handle_event(&inner, evt, evt_data, handle);
+            },
+        );
 
         let weak: Weak<AppInner> = Rc::downgrade(&self.inner);
-        let handler_tray = nwg::full_bind_event_handler(&self.inner.tray_window.handle, move |evt, evt_data, handle| {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            AppInner::handle_event(&inner, evt, evt_data, handle);
-        });
+        let handler_tray = nwg::full_bind_event_handler(
+            &self.inner.tray_window.handle,
+            move |evt, evt_data, handle| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                AppInner::handle_event(&inner, evt, evt_data, handle);
+            },
+        );
 
         let mut handlers = self.inner.handlers.borrow_mut();
         handlers.push(handler_main);
@@ -438,7 +445,7 @@ impl AppInner {
             nwg::CheckBoxState::Unchecked
         };
         self.sync_checkbox.set_check_state(state);
-        println!("Sync enabled: {}", model.sync_enabled);
+        info!("sync_enabled={}", model.sync_enabled);
     }
 
     fn on_device_selection(&self) {
@@ -454,8 +461,8 @@ impl AppInner {
             hm.select_device(path);
             let _ = hm.update_lighting(current_lang);
             match hm.get_protocol_version() {
-                Ok(version) => println!("VIA Protocol Version: {:04x}", version),
-                Err(e) => println!("Failed to get protocol version: {}", e),
+                Ok(version) => debug!("via_protocol_version=0x{:04x}", version),
+                Err(e) => warn!("via_protocol_version_error={}", e),
             }
         }
     }
@@ -479,7 +486,10 @@ impl AppInner {
 
         if let Some((lang_id, target_layer)) = found {
             model.layer_config.insert(lang_id, target_layer);
-            println!("Set layer for {} to {:?}", lang_id, target_layer);
+            info!(
+                "set_layer_config lang={} target_layer={:?}",
+                lang_id, target_layer
+            );
         }
     }
 
@@ -492,7 +502,7 @@ impl AppInner {
             .and_then(|hm| hm.get_layer_count().ok())
             && model.layer_count != count
         {
-            println!("Layer count changed to: {}", count);
+            debug!("layer_count_changed={}", count);
             model.layer_count = count;
             for row in &mut model.lang_rows {
                 row.populated = false;
@@ -586,8 +596,8 @@ impl AppInner {
             let current_lang = model.ime_tracker.current();
             match model.layer_config.get(&current_lang) {
                 Some(Some(target_layer)) => match hm.set_layer_state(*target_layer) {
-                    Ok(_) => println!("Switched to layer {}", target_layer),
-                    Err(e) => println!("Error setting layer state: {}", e),
+                    Ok(_) => info!("switched_layer={}", target_layer),
+                    Err(e) => warn!("set_layer_state_error={}", e),
                 },
                 Some(None) => {}
                 None => {}

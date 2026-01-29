@@ -11,6 +11,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SendMessageW, WM_IME_CONTROL,
 };
 
+use log::debug;
+
 // IMC_GETOPENSTATUS, 혹은 IMC_GETCONVERSIONMODE 사용해야 함
 // 현재 windows crate에서 해당 값 찾을 수 없어 여기서 정의
 // https://learn.microsoft.com/en-us/previous-versions/windows/embedded/ms920838(v=msdn.10)
@@ -66,7 +68,7 @@ impl LanguageTracker {
         self.current = Some(new_lang);
         self.detected_langs.insert(new_lang);
         if self.is_changed() {
-            println!("current lang: {new_lang}");
+            debug!("current_lang={}", new_lang);
         }
     }
 
@@ -124,6 +126,6 @@ mod test {
 
     #[test]
     fn lang_id_print_test() {
-        println!("English: {}", LangId::english()); // 영어(미국)
+        debug!("English: {}", LangId::english()); // 영어(미국)
     }
 }
