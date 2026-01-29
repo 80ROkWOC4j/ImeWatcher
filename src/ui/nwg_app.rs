@@ -104,6 +104,9 @@ struct AppInner {
     #[allow(dead_code)]
     font_header: Option<nwg::Font>,
 
+    #[allow(dead_code)]
+    font_ui_bold: Option<nwg::Font>,
+
     // Tray
     #[allow(dead_code)]
     tray_window: nwg::MessageWindow,
@@ -167,6 +170,19 @@ impl AppUi {
             .is_ok()
         {
             Some(font_header)
+        } else {
+            None
+        };
+
+        let mut font_ui_bold = nwg::Font::default();
+        let font_ui_bold = if nwg::Font::builder()
+            .family("Segoe UI")
+            .size_absolute(14)
+            .weight(600)
+            .build(&mut font_ui_bold)
+            .is_ok()
+        {
+            Some(font_ui_bold)
         } else {
             None
         };
@@ -294,6 +310,7 @@ impl AppUi {
             icon,
             font_ui,
             font_header,
+            font_ui_bold,
             tray_window,
             tray,
             tray_menu,
@@ -321,6 +338,7 @@ impl AppUi {
 
         let ui = Self { inner };
         ui.bind_events();
+        ui.sync_language_ui();
         Ok(ui)
     }
 
@@ -337,10 +355,11 @@ impl AppUi {
         }
     }
 
-    fn bind_events(&self) {
-        // NOTE: tray events are dispatched to the tray's parent message window.
-        // Bind handlers for BOTH the main window and the tray message window.
+    fn sync_language_ui(&self) {
+        self.inner.sync_language_ui();
+    }
 
+    fn bind_events(&self) {
         let weak: Weak<AppInner> = Rc::downgrade(&self.inner);
         let handler_main = nwg::full_bind_event_handler(
             &self.inner.window.handle,
@@ -387,6 +406,28 @@ impl AppUi {
 }
 
 impl AppInner {
+    fn sync_language_ui(&self) {
+        let mut model = self.model.borrow_mut();
+        let lang = model.ime_tracker.current();
+        self.update_language_rows_accent(&mut model, lang);
+    }
+
+    fn update_language_rows_accent(&self, model: &mut AppModel, lang: LangId) {
+        for row in &model.lang_rows {
+            let base = row.lang_id.to_string();
+            if row.lang_id == lang {
+                row.label.set_text(&base);
+                if let Some(font) = self.font_ui_bold.as_ref() {
+                    row.label.set_font(Some(font));
+                }
+            } else {
+                row.label.set_text(&base);
+                if let Some(font) = self.font_ui.as_ref() {
+                    row.label.set_font(Some(font));
+                }
+            }
+        }
+    }
     fn handle_event(&self, evt: nwg::Event, evt_data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
 
@@ -405,6 +446,7 @@ impl AppInner {
                 if let nwg::EventData::OnWindowClose(close_data) = evt_data {
                     close_data.close(false);
                 }
+                // Background app: closing the window hides it.
                 self.window.set_visible(false);
             }
             E::OnButtonClick if handle == self.sync_checkbox => {
@@ -582,6 +624,10 @@ impl AppInner {
                 populated: false,
             });
         }
+
+        // Update the indicator/bold state even if language didn't change (new row might have been added).
+        let active_lang = model.ime_tracker.current();
+        self.update_language_rows_accent(&mut model, active_lang);
 
         // Update lighting
         if let Some(ref hm) = model.hid_manager {
