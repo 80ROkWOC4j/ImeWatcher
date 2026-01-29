@@ -1,1 +1,1 @@
-pub mod tray;
+pub mod nwg_app;

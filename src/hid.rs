@@ -70,16 +70,21 @@ impl HidManager {
         device.write(&data).map_err(|e| e.to_string())?;
 
         let mut buf = [0u8; 33];
-        let res = device.read_timeout(&mut buf, 100).map_err(|e| e.to_string())?;
+        let res = device
+            .read_timeout(&mut buf, 100)
+            .map_err(|e| e.to_string())?;
 
         let offset = if res > 0 && buf[0] == 0x00 { 1 } else { 0 };
 
         if res > offset + 2 {
             if buf[offset] == 0x01 {
-                let version = u16::from_be_bytes([buf[offset+1], buf[offset+2]]);
+                let version = u16::from_be_bytes([buf[offset + 1], buf[offset + 2]]);
                 Ok(version)
             } else {
-                Err(format!("Unexpected response for protocol version: {:?}", &buf[..res]))
+                Err(format!(
+                    "Unexpected response for protocol version: {:?}",
+                    &buf[..res]
+                ))
             }
         } else {
             Err("No response from device for protocol version".to_string())
@@ -88,7 +93,7 @@ impl HidManager {
 
     pub fn get_layer_count(&self) -> Result<u8, String> {
         let device = self.open_selected_device()?;
-        
+
         let mut data = [0u8; 33];
         data[0] = 0x00; // Report ID
         data[1] = 0x11; // id_dynamic_keymap_get_layer_count
@@ -96,7 +101,9 @@ impl HidManager {
         device.write(&data).map_err(|e| e.to_string())?;
 
         let mut buf = [0u8; 33];
-        let res = device.read_timeout(&mut buf, 100).map_err(|e| e.to_string())?;
+        let res = device
+            .read_timeout(&mut buf, 100)
+            .map_err(|e| e.to_string())?;
 
         let offset = if res > 0 && buf[0] == 0x00 { 1 } else { 0 };
 

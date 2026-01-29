@@ -118,6 +118,12 @@ ipch/
 *.vspx
 *.sap
 
+# Local planning artifacts
+.sisyphus/
+
+# Local LLM context notes
+GEMINI.md
+
 # Visual Studio Trace Files
 *.e2e
 
