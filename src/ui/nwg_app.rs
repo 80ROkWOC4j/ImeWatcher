@@ -353,7 +353,9 @@ impl AppUi {
         let mut devices = Vec::new();
         if let Some(ref mut hm) = hid_manager {
             devices = hm.list_devices();
-            hm.auto_select_first();
+            if let Some(first) = devices.first() {
+                hm.select_device(first);
+            }
         }
 
         let device_items = devices
@@ -581,14 +583,11 @@ impl AppInner {
     fn on_device_selection(&self) {
         let idx = self.device_combo.selection().unwrap_or(0);
         let mut model = self.model.borrow_mut();
-        let device_path = model
-            .devices
-            .get(idx)
-            .map(|d| d.path().to_string_lossy().to_string());
+        let device = model.devices.get(idx).cloned();
         let current_lang = model.ime_tracker.current();
 
-        if let (Some(path), Some(ref mut hm)) = (device_path, model.hid_manager.as_mut()) {
-            hm.select_device(path);
+        if let (Some(device), Some(ref mut hm)) = (device.as_ref(), model.hid_manager.as_mut()) {
+            hm.select_device(device);
             match hm.get_protocol_version() {
                 Ok(version) => debug!("via_protocol_version=0x{:04x}", version),
                 Err(e) => warn!("via_protocol_version_error={}", e),

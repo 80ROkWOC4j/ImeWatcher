@@ -15,3 +15,8 @@ Detect Windows IME language change.
 - 날개셋 입력기 사용 불가능한 윈도우 환경(vdi 원격 등)에서 윈도우 내장 두벌식(혹은 내장 세벌식) 레이아웃 쓰면서 커스텀 자판도 쓰고 싶은 경우  
 - 한/영 상태에 따라 키보드 라이트 등 바꾸고 싶은 경우  
 - 한글 전용 레이어 사용하면서 적절히 auto switch
+
+# License
+ImeWatcher is licensed under the GNU General Public License v3.0 only (GPL-3.0-only). See `LICENSE`.
+
+This project uses `qmk-via-api` (GPL-3.0-only), which is based in parts on `the-via/app` (GPL-3.0).
