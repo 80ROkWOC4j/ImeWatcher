@@ -1,4 +1,3 @@
-use crate::ime::LangId;
 use hidapi::{DeviceInfo, HidApi, HidDevice};
 
 // QMK RAW HID Constants
@@ -7,6 +6,54 @@ const QMK_RAW_USAGE: u16 = 0x61;
 
 // Custom Command ID for Layer Switch (User must implement this in QMK firmware)
 const CUSTOM_CMD_LAYER_SWITCH: u8 = 0x21;
+
+// VIA custom lighting commands (VIA protocol v12)
+const VIA_CUSTOM_SET_VALUE: u8 = 0x07;
+const VIA_CUSTOM_GET_VALUE: u8 = 0x08;
+
+// VIA lighting channels
+const VIA_CHANNEL_BACKLIGHT: u8 = 1;
+const VIA_CHANNEL_RGBLIGHT: u8 = 2;
+const VIA_CHANNEL_RGB_MATRIX: u8 = 3;
+const VIA_CHANNEL_LED_MATRIX: u8 = 5;
+
+// VIA value ids
+const VIA_VALUE_BRIGHTNESS: u8 = 1;
+const VIA_VALUE_EFFECT: u8 = 2;
+const VIA_VALUE_EFFECT_SPEED: u8 = 3;
+const VIA_VALUE_COLOR: u8 = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViaLightingChannel {
+    Backlight,
+    RgbLight,
+    RgbMatrix,
+    LedMatrix,
+}
+
+impl ViaLightingChannel {
+    fn id(self) -> u8 {
+        match self {
+            Self::Backlight => VIA_CHANNEL_BACKLIGHT,
+            Self::RgbLight => VIA_CHANNEL_RGBLIGHT,
+            Self::RgbMatrix => VIA_CHANNEL_RGB_MATRIX,
+            Self::LedMatrix => VIA_CHANNEL_LED_MATRIX,
+        }
+    }
+
+    fn supports_speed_and_color(self) -> bool {
+        matches!(self, Self::RgbLight | Self::RgbMatrix)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LightingSnapshot {
+    pub channel: ViaLightingChannel,
+    pub brightness: u8,
+    pub effect: u8,
+    pub effect_speed: Option<u8>,
+    pub color_hs: Option<(u8, u8)>,
+}
 
 pub struct HidManager {
     api: HidApi,
@@ -44,11 +91,6 @@ impl HidManager {
         false
     }
 
-    pub fn update_lighting(&self, lang_id: LangId) -> Result<(), String> {
-        let device = self.open_selected_device()?;
-        self.send_lighting_command(&device, lang_id)
-    }
-
     fn open_selected_device(&self) -> Result<HidDevice, String> {
         let path_str = self
             .selected_device_path
@@ -58,6 +100,81 @@ impl HidManager {
         self.api
             .open_path(&path)
             .map_err(|e| format!("Failed to open device: {}", e))
+    }
+
+    pub fn capture_lighting_snapshot(&self) -> Result<LightingSnapshot, String> {
+        let device = self.open_selected_device()?;
+
+        // Prefer RGB matrix > RGB light > backlight > LED matrix.
+        let candidates = [
+            ViaLightingChannel::RgbMatrix,
+            ViaLightingChannel::RgbLight,
+            ViaLightingChannel::Backlight,
+            ViaLightingChannel::LedMatrix,
+        ];
+
+        for channel in candidates {
+            let brightness =
+                match self.via_custom_get_u8(&device, channel.id(), VIA_VALUE_BRIGHTNESS) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+            let effect = self
+                .via_custom_get_u8(&device, channel.id(), VIA_VALUE_EFFECT)
+                .unwrap_or(0);
+
+            let (effect_speed, color_hs) = if channel.supports_speed_and_color() {
+                let speed = self
+                    .via_custom_get_u8(&device, channel.id(), VIA_VALUE_EFFECT_SPEED)
+                    .ok();
+                let color = self.via_custom_get_color_hs(&device, channel.id()).ok();
+                (speed, color)
+            } else {
+                (None, None)
+            };
+
+            return Ok(LightingSnapshot {
+                channel,
+                brightness,
+                effect,
+                effect_speed,
+                color_hs,
+            });
+        }
+
+        Err("No supported VIA lighting channel found".to_string())
+    }
+
+    pub fn set_snapshot_brightness(
+        &self,
+        snapshot: &LightingSnapshot,
+        brightness: u8,
+    ) -> Result<(), String> {
+        let device = self.open_selected_device()?;
+        self.via_custom_set_u8(
+            &device,
+            snapshot.channel.id(),
+            VIA_VALUE_BRIGHTNESS,
+            brightness,
+        )
+    }
+
+    pub fn restore_lighting_snapshot(&self, snapshot: &LightingSnapshot) -> Result<(), String> {
+        let device = self.open_selected_device()?;
+        let channel = snapshot.channel.id();
+
+        // Restore effect first (may enable/disable the lighting engine).
+        let _ = self.via_custom_set_u8(&device, channel, VIA_VALUE_EFFECT, snapshot.effect);
+
+        if let Some(speed) = snapshot.effect_speed {
+            let _ = self.via_custom_set_u8(&device, channel, VIA_VALUE_EFFECT_SPEED, speed);
+        }
+        if let Some((h, s)) = snapshot.color_hs {
+            let _ = self.via_custom_set_color_hs(&device, channel, h, s);
+        }
+
+        self.via_custom_set_u8(&device, channel, VIA_VALUE_BRIGHTNESS, snapshot.brightness)
     }
 
     pub fn get_protocol_version(&self) -> Result<u16, String> {
@@ -138,29 +255,117 @@ impl HidManager {
         Ok(())
     }
 
-    fn send_lighting_command(&self, device: &HidDevice, lang_id: LangId) -> Result<(), String> {
-        let is_ime_active = lang_id != LangId::english();
-        let brightness = if is_ime_active { 255 } else { 0 };
+    fn via_custom_get_u8(
+        &self,
+        device: &HidDevice,
+        channel_id: u8,
+        value_id: u8,
+    ) -> Result<u8, String> {
+        let mut data = [0u8; 33];
+        data[0] = 0x00;
+        data[1] = VIA_CUSTOM_GET_VALUE;
+        data[2] = channel_id;
+        data[3] = value_id;
 
-        let commands = [
-            (0x01, "Backlight Brightness"),
-            (0x03, "RGB Matrix Brightness"),
-            (0x05, "RGBLight Brightness"),
-        ];
+        device.write(&data).map_err(|e| e.to_string())?;
 
-        for (id, _name) in commands {
-            let mut data = [0u8; 33];
-            data[0] = 0x00;
-            data[1] = 0x03; // id_set_keyboard_value
-            data[2] = id;
-            data[3] = brightness;
+        let mut buf = [0u8; 33];
+        let res = device
+            .read_timeout(&mut buf, 100)
+            .map_err(|e| e.to_string())?;
+        let offset = if res > 0 && buf[0] == 0x00 { 1 } else { 0 };
 
-            device.write(&data).map_err(|e| e.to_string())?;
-
-            let mut buf = [0u8; 33];
-            let _ = device.read_timeout(&mut buf, 20);
+        if res <= offset {
+            return Err("No response from device".to_string());
+        }
+        let cmd = buf[offset];
+        if cmd == 0xFF {
+            return Err("VIA custom get value unhandled".to_string());
+        }
+        if cmd != VIA_CUSTOM_GET_VALUE {
+            return Err(format!("Unexpected VIA response: cmd=0x{cmd:02x}"));
+        }
+        if res <= offset + 3 {
+            return Err("Short VIA response".to_string());
         }
 
+        Ok(buf[offset + 3])
+    }
+
+    fn via_custom_get_color_hs(
+        &self,
+        device: &HidDevice,
+        channel_id: u8,
+    ) -> Result<(u8, u8), String> {
+        let mut data = [0u8; 33];
+        data[0] = 0x00;
+        data[1] = VIA_CUSTOM_GET_VALUE;
+        data[2] = channel_id;
+        data[3] = VIA_VALUE_COLOR;
+
+        device.write(&data).map_err(|e| e.to_string())?;
+
+        let mut buf = [0u8; 33];
+        let res = device
+            .read_timeout(&mut buf, 100)
+            .map_err(|e| e.to_string())?;
+        let offset = if res > 0 && buf[0] == 0x00 { 1 } else { 0 };
+
+        if res <= offset {
+            return Err("No response from device".to_string());
+        }
+        let cmd = buf[offset];
+        if cmd == 0xFF {
+            return Err("VIA custom get value unhandled".to_string());
+        }
+        if cmd != VIA_CUSTOM_GET_VALUE {
+            return Err(format!("Unexpected VIA response: cmd=0x{cmd:02x}"));
+        }
+        if res <= offset + 4 {
+            return Err("Short VIA response".to_string());
+        }
+
+        Ok((buf[offset + 3], buf[offset + 4]))
+    }
+
+    fn via_custom_set_u8(
+        &self,
+        device: &HidDevice,
+        channel_id: u8,
+        value_id: u8,
+        value: u8,
+    ) -> Result<(), String> {
+        let mut data = [0u8; 33];
+        data[0] = 0x00;
+        data[1] = VIA_CUSTOM_SET_VALUE;
+        data[2] = channel_id;
+        data[3] = value_id;
+        data[4] = value;
+
+        device.write(&data).map_err(|e| e.to_string())?;
+        let mut buf = [0u8; 33];
+        let _ = device.read_timeout(&mut buf, 20);
+        Ok(())
+    }
+
+    fn via_custom_set_color_hs(
+        &self,
+        device: &HidDevice,
+        channel_id: u8,
+        hue: u8,
+        sat: u8,
+    ) -> Result<(), String> {
+        let mut data = [0u8; 33];
+        data[0] = 0x00;
+        data[1] = VIA_CUSTOM_SET_VALUE;
+        data[2] = channel_id;
+        data[3] = VIA_VALUE_COLOR;
+        data[4] = hue;
+        data[5] = sat;
+
+        device.write(&data).map_err(|e| e.to_string())?;
+        let mut buf = [0u8; 33];
+        let _ = device.read_timeout(&mut buf, 20);
         Ok(())
     }
 }
