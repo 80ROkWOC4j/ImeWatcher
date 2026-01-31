@@ -6,11 +6,11 @@ use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
 use log::{debug, info, warn};
 use native_windows_gui as nwg;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SendMessageW, WM_SETICON};
 
 const RAW_HANDLER_ID: usize = 0x10000;
 
@@ -100,7 +100,10 @@ struct AppModel {
 struct AppInner {
     // Resources
     #[allow(dead_code)]
-    icon: nwg::Icon,
+    icon_small: nwg::Icon,
+
+    #[allow(dead_code)]
+    icon_big: nwg::Icon,
 
     #[allow(dead_code)]
     font_ui: Option<nwg::Font>,
@@ -147,20 +150,55 @@ impl AppUi {
     pub fn build() -> Result<Self, Box<dyn std::error::Error>> {
         let l = layout();
 
-        // Tray notification requires an icon, so ensure we always have one.
-        // Prefer embedded icon resource (Windows .rc). Fall back to a compile-time bundled icon.
-        let icon = {
-            let mut icon = nwg::Icon::default();
-            if nwg::Icon::builder()
+        // Taskbar/Alt+Tab uses ICON_BIG, while the caption typically uses ICON_SMALL.
+        // NWG only sets ICON_SMALL via `Window::set_icon`, so we load both sizes and
+        // explicitly set ICON_BIG with WM_SETICON.
+        let (icon_small, icon_big) = {
+            let mut small = nwg::Icon::default();
+            let mut big = nwg::Icon::default();
+
+            let embedded_ok = nwg::Icon::builder()
                 .source_embed_str(Some("IDI_ICON1"))
+                .size(Some((16, 16)))
                 .strict(true)
-                .build(&mut icon)
+                .build(&mut small)
                 .is_ok()
-            {
-                icon
+                && nwg::Icon::builder()
+                    .source_embed_str(Some("IDI_ICON1"))
+                    .size(Some((32, 32)))
+                    .strict(true)
+                    .build(&mut big)
+                    .is_ok();
+
+            if embedded_ok {
+                (small, big)
             } else {
                 warn!("Embedded icon resource IDI_ICON1 not found; using bundled icon bytes");
-                nwg::Icon::from_bin(include_bytes!("../../icon.ico"))?
+
+                let mut small = nwg::Icon::default();
+                let mut big = nwg::Icon::default();
+
+                let bin_ok = nwg::Icon::builder()
+                    .source_bin(Some(include_bytes!("../../icon.ico")))
+                    .size(Some((16, 16)))
+                    .strict(true)
+                    .build(&mut small)
+                    .is_ok()
+                    && nwg::Icon::builder()
+                        .source_bin(Some(include_bytes!("../../icon.ico")))
+                        .size(Some((32, 32)))
+                        .strict(true)
+                        .build(&mut big)
+                        .is_ok();
+
+                if bin_ok {
+                    (small, big)
+                } else {
+                    // Last-resort fallback: let NWG pick icon size from the .ico.
+                    let small = nwg::Icon::from_bin(include_bytes!("../../icon.ico"))?;
+                    let big = nwg::Icon::from_bin(include_bytes!("../../icon.ico"))?;
+                    (small, big)
+                }
             }
         };
 
@@ -211,7 +249,7 @@ impl AppUi {
         let mut tray = nwg::TrayNotification::default();
         nwg::TrayNotification::builder()
             .parent(&tray_window)
-            .icon(Some(&icon))
+            .icon(Some(&icon_small))
             .tip(Some(PROGRAM_NAME))
             .build(&mut tray)?;
 
@@ -239,8 +277,20 @@ impl AppUi {
             .size((l.window_w, UI_WINDOW_H))
             .position((300, 300))
             .title(PROGRAM_WINDOW)
-            .icon(Some(&icon))
+            .icon(Some(&icon_small))
             .build(&mut window)?;
+
+        // Ensure taskbar/Alt+Tab icon uses ICON_BIG (1).
+        if let Some(hwnd) = window.handle.hwnd() {
+            unsafe {
+                let _ = SendMessageW(
+                    HWND(hwnd as _),
+                    WM_SETICON,
+                    Some(WPARAM(1)),
+                    Some(LPARAM(icon_big.handle as isize)),
+                );
+            }
+        }
 
         let mut device_label = nwg::Label::default();
         nwg::Label::builder()
@@ -345,7 +395,8 @@ impl AppUi {
         }
 
         let inner = Rc::new(AppInner {
-            icon,
+            icon_small,
+            icon_big,
             font_ui,
             font_header,
             font_ui_bold,
