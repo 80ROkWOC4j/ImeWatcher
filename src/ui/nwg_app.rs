@@ -150,9 +150,18 @@ impl AppUi {
         let l = layout();
 
         let mut icon = nwg::Icon::default();
-        nwg::Icon::builder()
-            .source_system(Some(nwg::OemIcon::WinLogo))
-            .build(&mut icon)?;
+        // Prefer embedded icon resource (Windows .rc). Fall back to loading icon.ico next to the binary.
+        if nwg::Icon::builder()
+            .source_embed_str(Some("IDI_ICON1"))
+            .strict(true)
+            .build(&mut icon)
+            .is_err()
+        {
+            nwg::Icon::builder()
+                .source_file(Some("icon.ico"))
+                .strict(true)
+                .build(&mut icon)?;
+        }
 
         // Font fallback:
         // - Prefer Segoe UI when available.
@@ -229,6 +238,7 @@ impl AppUi {
             .size((l.window_w, UI_WINDOW_H))
             .position((300, 300))
             .title(PROGRAM_WINDOW)
+            .icon(Some(&icon))
             .build(&mut window)?;
 
         let mut device_label = nwg::Label::default();

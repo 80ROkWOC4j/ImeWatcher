@@ -6,6 +6,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=app.manifest");
     println!("cargo:rerun-if-changed=build/windows-manifest.rc");
+    println!("cargo:rerun-if-changed=icon.ico");
 
     let _ = embed_resource::compile("build/windows-manifest.rc", embed_resource::NONE);
 }
