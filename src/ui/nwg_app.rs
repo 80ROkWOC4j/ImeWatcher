@@ -715,10 +715,11 @@ impl AppInner {
             y_pos: i32,
         }
 
-        let (changed, active_lang, new_rows, do_layer_switch) = {
+        let (changed, active_lang, sync_enabled, new_rows, do_layer_switch) = {
             let mut model = self.model.borrow_mut();
             let changed = model.ime_tracker.check_and_update();
             let active_lang = model.ime_tracker.current();
+            let sync_enabled = model.sync_enabled;
 
             let current_ui_langs: HashSet<LangId> =
                 model.lang_rows.iter().map(|r| r.lang_id).collect();
@@ -740,8 +741,20 @@ impl AppInner {
 
             let do_layer_switch = changed && model.sync_enabled;
 
-            (changed, active_lang, new_rows, do_layer_switch)
+            (changed, active_lang, sync_enabled, new_rows, do_layer_switch)
         };
+
+        if changed {
+            info!(
+                "ime_changed active_lang={} sync_enabled={} do_layer_switch={}",
+                active_lang, sync_enabled, do_layer_switch
+            );
+        } else {
+            debug!(
+                "ime_change changed={} active_lang={} do_layer_switch={}",
+                changed, active_lang, do_layer_switch
+            );
+        }
 
         // Phase 2: create any missing UI rows (no model borrow).
         let mut created_rows = Vec::new();
@@ -785,63 +798,73 @@ impl AppInner {
         }
 
         // Phase 4: lighting animation (snapshot -> pulse brightness -> restore)
-        if changed {
-            // If an animation is already running, restore first so the next snapshot is clean.
-            let prior_snapshot = {
-                let model = self.model.borrow();
-                model.lighting_anim.as_ref().map(|a| a.snapshot.clone())
-            };
-            if let Some(snapshot) = prior_snapshot {
-                {
-                    let model = self.model.borrow();
-                    if let Some(hm) = model.hid_manager.as_ref() {
-                        let _ = hm.restore_lighting_snapshot(&snapshot);
-                    }
-                }
-                self.model.borrow_mut().lighting_anim = None;
-            }
-
-            let snapshot_res = {
-                let model = self.model.borrow();
-                model
-                    .hid_manager
-                    .as_ref()
-                    .map(|hm| hm.capture_lighting_snapshot())
-            };
-
-            match snapshot_res {
-                Some(Ok(snapshot)) => {
-                    let anim = LightingAnim::new(snapshot);
-                    let initial = anim.current_brightness();
-
-                    // Start at first step.
-                    {
-                        let model = self.model.borrow();
-                        if let Some(hm) = model.hid_manager.as_ref() {
-                            let _ = hm.set_snapshot_brightness(&anim.snapshot, initial);
-                        }
-                    }
-
-                    {
-                        let mut model = self.model.borrow_mut();
-                        model.lighting_anim = Some(anim);
-                    }
-                }
-                Some(Err(e)) => warn!("lighting_snapshot_error={}", e),
-                None => {}
-            }
-        }
+        // if changed {
+        //     // If an animation is already running, restore first so the next snapshot is clean.
+        //     let prior_snapshot = {
+        //         let model = self.model.borrow();
+        //         model.lighting_anim.as_ref().map(|a| a.snapshot.clone())
+        //     };
+        //     if let Some(snapshot) = prior_snapshot {
+        //         {
+        //             let model = self.model.borrow();
+        //             if let Some(hm) = model.hid_manager.as_ref() {
+        //                 let _ = hm.restore_lighting_snapshot(&snapshot);
+        //             }
+        //         }
+        //         self.model.borrow_mut().lighting_anim = None;
+        //     }
+        //
+        //     let snapshot_res = {
+        //         let model = self.model.borrow();
+        //         model
+        //             .hid_manager
+        //             .as_ref()
+        //             .map(|hm| hm.capture_lighting_snapshot())
+        //     };
+        //
+        //     match snapshot_res {
+        //         Some(Ok(snapshot)) => {
+        //             let anim = LightingAnim::new(snapshot);
+        //             let initial = anim.current_brightness();
+        //
+        //             // Start at first step.
+        //             {
+        //                 let model = self.model.borrow();
+        //                 if let Some(hm) = model.hid_manager.as_ref() {
+        //                     let _ = hm.set_snapshot_brightness(&anim.snapshot, initial);
+        //                 }
+        //             }
+        //
+        //             {
+        //                 let mut model = self.model.borrow_mut();
+        //                 model.lighting_anim = Some(anim);
+        //             }
+        //         }
+        //         Some(Err(e)) => warn!("lighting_snapshot_error={}", e),
+        //         None => {}
+        //     }
+        // }
 
         if do_layer_switch {
             let model = self.model.borrow();
             if let Some(ref hm) = model.hid_manager {
                 match model.layer_config.get(&active_lang) {
-                    Some(Some(target_layer)) => match hm.set_layer_state(*target_layer) {
+                    Some(Some(target_layer)) => {
+                        info!(
+                            "layer_switch_request lang={} target_layer={}",
+                            active_lang, target_layer
+                        );
+                        match hm.set_layer_state(*target_layer) {
                         Ok(_) => info!("switched_layer={}", target_layer),
                         Err(e) => warn!("set_layer_state_error={}", e),
-                    },
-                    Some(None) => {}
-                    None => {}
+                        }
+                    }
+                    Some(None) => {
+                        debug!("layer_switch_skipped lang={} reason=explicit_none", active_lang);
+                    }
+                    None => {
+                        debug!("layer_switch_skipped lang={} reason=no_mapping", active_lang);
+                    }
                 }
             }
         }

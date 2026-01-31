@@ -1,12 +1,19 @@
 use hidapi::{DeviceInfo, HidApi, HidDevice};
+use log::{debug, warn};
 use qmk_via_api::api::KeyboardApi;
 
 // QMK RAW HID constants (VIA/QMK Raw HID interface)
 const QMK_RAW_USAGE_PAGE: u16 = 0xFF60;
 const QMK_RAW_USAGE: u16 = 0x61;
 
-// Custom Command ID for Layer Switch (requires QMK firmware support)
-const CUSTOM_CMD_LAYER_SWITCH: u8 = 0x21;
+// ImeWatcher custom Raw HID protocol (requires QMK firmware support)
+const IMEWATCHER_CMD: u8 = 0x21;
+const IMEWATCHER_SIG: [u8; 4] = *b"IMEW";
+const IMEWATCHER_OP_SET_DEFAULT_LAYER: u8 = 0x01;
+
+const IMEWATCHER_STATUS_OK: u8 = 0x00;
+const IMEWATCHER_STATUS_BAD_LAYER: u8 = 0x01;
+const IMEWATCHER_STATUS_BAD_PAYLOAD: u8 = 0x02;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ViaLightingChannel {
@@ -225,21 +232,104 @@ impl HidManager {
     }
 
     /// Sends a custom command to switch layers.
-    /// Requires QMK firmware modification to handle command ID 0x21.
+    /// Requires QMK firmware modification to handle ImeWatcher Raw HID protocol.
     pub fn set_layer_state(&self, layer_index: u8) -> Result<(), String> {
         let device = self.open_selected_device()?;
 
         let mut data = [0u8; 33];
         data[0] = 0x00; // Report ID
-        data[1] = CUSTOM_CMD_LAYER_SWITCH; // Custom Command
-        data[2] = layer_index;
+                        // QMK-side sees 32 bytes starting from data[1]
+        data[1] = IMEWATCHER_CMD;
+        data[2..6].copy_from_slice(&IMEWATCHER_SIG);
+        data[6] = IMEWATCHER_OP_SET_DEFAULT_LAYER;
+        data[7] = layer_index;
+
+        debug!(
+            "rawhid_tx cmd=0x{:02x} sig={:02x?} op=0x{:02x} layer={} (33b host report)",
+            data[1],
+            &data[2..6],
+            data[6],
+            data[7]
+        );
 
         device.write(&data).map_err(|e| e.to_string())?;
 
-        // Ignore response (custom command may not return anything useful).
+        // Best-effort: read response so we can log firmware status.
         let mut buf = [0u8; 33];
-        let _ = device.read_timeout(&mut buf, 20);
+        match device.read_timeout(&mut buf, 120) {
+            Ok(0) => {
+                debug!(
+                    "rawhid_rx timeout cmd=0x{:02x} op=0x{:02x} layer={} (no response)",
+                    data[1], data[6], data[7]
+                );
+                warn!("rawhid_no_response (missing firmware handler or wrong interface/usage)");
+                return Err(
+                    "No response from device (firmware might not include ImeWatcher Raw HID handler)"
+                        .to_string(),
+                );
+            }
+            Ok(_n) => {
+                // buf[0] is report id; firmware payload starts at buf[1]
+                let rx_cmd = buf[1];
+                let rx_sig = [buf[2], buf[3], buf[4], buf[5]];
+                let rx_op = buf[6];
+                let rx_layer = buf[7];
+                let rx_status = buf[8];
 
-        Ok(())
+                debug!(
+                    "rawhid_rx cmd=0x{:02x} sig={:02x?} op=0x{:02x} layer={} status=0x{:02x}",
+                    rx_cmd, rx_sig, rx_op, rx_layer, rx_status
+                );
+
+                if rx_cmd != IMEWATCHER_CMD {
+                    return Err(format!(
+                        "Unexpected response cmd=0x{rx_cmd:02x} (expected 0x{IMEWATCHER_CMD:02x})"
+                    ));
+                }
+
+                if rx_sig != IMEWATCHER_SIG {
+                    return Err(format!(
+                        "Unexpected response signature={rx_sig:02x?} (expected {:02x?})",
+                        IMEWATCHER_SIG
+                    ));
+                }
+
+                if rx_op != IMEWATCHER_OP_SET_DEFAULT_LAYER {
+                    return Err(format!(
+                        "Unexpected response opcode=0x{rx_op:02x} (expected 0x{IMEWATCHER_OP_SET_DEFAULT_LAYER:02x})"
+                    ));
+                }
+
+                if rx_layer != layer_index {
+                    return Err(format!(
+                        "Unexpected response layer={rx_layer} (expected {layer_index})"
+                    ));
+                }
+
+                match rx_status {
+                    IMEWATCHER_STATUS_OK => Ok(()),
+                    IMEWATCHER_STATUS_BAD_LAYER => {
+                        warn!("rawhid_status BAD_LAYER layer={}", rx_layer);
+                        Err(format!("Device rejected layer={rx_layer} (BAD_LAYER)"))
+                    }
+                    IMEWATCHER_STATUS_BAD_PAYLOAD => {
+                        warn!("rawhid_status BAD_PAYLOAD (likely firmware/protocol mismatch)");
+                        Err(
+                            "Device reported BAD_PAYLOAD (protocol mismatch or handler not active)"
+                                .to_string(),
+                        )
+                    }
+                    other => {
+                        warn!("rawhid_status UNKNOWN=0x{:02x}", other);
+                        Err(format!("Device reported unknown status=0x{other:02x}"))
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("rawhid_rx error={}", e);
+                warn!("rawhid_rx_failed error={}", e);
+                Err(format!("Failed to read response: {e}"))
+            }
+        }
     }
 }
