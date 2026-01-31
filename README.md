@@ -7,6 +7,69 @@ Detect Windows IME language change.
 - 한/영 상태에 따라 키보드 라이트 등 바꾸고 싶은 경우  
 - 한글 전용 레이어 사용하면서 적절히 auto switch
 
+# 설정 파일 (config.toml)
+
+ImeWatcher는 실행 파일과 같은 디렉터리에 `config.toml`을 저장합니다.
+
+## 기능
+- **키보드별 설정**: 여러 키보드를 연결했을 때, 각 키보드마다 다른 Language→Layer 매핑 저장
+- **마지막 키보드 복원**: 앱 재시작 시 마지막으로 사용한 키보드 자동 선택
+- **확장 가능한 스키마**: 향후 VIA 설정(백라이트 등) 추가 예정
+
+## 설정 예시
+
+```toml
+version = 1
+
+# 마지막으로 사용한 키보드 (자동으로 업데이트됨)
+last_keyboard_id = "1234:5678:ff60:sn:ABC123"
+
+[keyboards]
+
+# 키보드별 설정 (키보드 ID는 자동으로 생성됨)
+[keyboards."1234:5678:ff60:sn:ABC123"]
+label = "My Keyboard (1234:5678)"
+vid = 4660
+pid = 22136
+usage_page = 65376
+
+# Language → Layer 매핑 (16진수 언어 ID = 레이어 번호)
+[keyboards."1234:5678:ff60:sn:ABC123".lang_layer]
+"0x0409" = 0   # English → Layer 0
+"0x0412" = 1   # Korean → Layer 1
+```
+
+## 키보드 ID 생성 규칙
+- **시리얼 번호가 있는 경우**: `{vid:04x}:{pid:04x}:{usage_page:04x}:sn:{serial}`
+- **시리얼 번호가 없는 경우**: `{vid:04x}:{pid:04x}:{usage_page:04x}:path:{fnv_hash}`
+  - HID 경로의 FNV-1a 해시값을 사용하여 동일한 VID/PID를 가진 여러 키보드를 구분
+
+## VIA 설정 (비영속)
+
+VIA 호환 키보드일 경우, IME 언어 변화에 따라 조명/오디오 설정을 **비영속(EEPROM write 없음)** 으로 적용할 수 있습니다.
+
+지원 범위 (v1):
+- 조명: backlight / rgblight / rgb_matrix / led_matrix (지원되는 채널을 자동 선택)
+- 오디오: enabled / clicky enabled
+
+주의:
+- 키맵/매크로/EEPROM reset/bootloader 등 **영속 설정 변경은 의도적으로 지원하지 않습니다.**
+
+예시:
+
+```toml
+[keyboards."1234:5678:ff60:sn:ABC123".via.lang."0x0412".lighting]
+brightness = 64
+effect = 1
+speed = 128
+color_h = 10
+color_s = 200
+
+[keyboards."1234:5678:ff60:sn:ABC123".via.lang."0x0412".audio]
+enabled = true
+clicky = false
+```
+
 # QMK 펌웨어 연동 (IME → 레이어 스위치)
 
 ImeWatcher는 윈도우 IME 언어(한/영 등) 변화에 맞춰 키보드의 QMK 레이어를 자동으로 전환할 수 있습니다.  

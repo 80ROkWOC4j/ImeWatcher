@@ -1,4 +1,4 @@
-use log::warn;
+use log::{debug, warn};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -54,6 +54,9 @@ pub struct KeyboardConfig {
 
     #[serde(default)]
     pub lang_layer: HashMap<String, u8>,
+
+    #[serde(default)]
+    pub via: Option<ViaConfig>,
 }
 
 impl Default for KeyboardConfig {
@@ -64,8 +67,51 @@ impl Default for KeyboardConfig {
             pid: 0,
             usage_page: 0,
             lang_layer: HashMap::new(),
+            via: None,
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ViaConfig {
+    #[serde(default)]
+    pub lang: HashMap<String, ViaLangConfig>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ViaLangConfig {
+    #[serde(default)]
+    pub lighting: Option<ViaLightingConfig>,
+
+    #[serde(default)]
+    pub audio: Option<ViaAudioConfig>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ViaLightingConfig {
+    #[serde(default)]
+    pub brightness: Option<u8>,
+
+    #[serde(default)]
+    pub effect: Option<u8>,
+
+    #[serde(default)]
+    pub speed: Option<u8>,
+
+    #[serde(default)]
+    pub color_h: Option<u8>,
+
+    #[serde(default)]
+    pub color_s: Option<u8>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ViaAudioConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+
+    #[serde(default)]
+    pub clicky: Option<bool>,
 }
 
 /// Get the path to the config file (in the same directory as the executable)
@@ -79,6 +125,7 @@ fn config_path() -> Option<PathBuf> {
 pub fn load_config() -> Config {
     match config_path() {
         Some(path) => {
+            debug!("config_path={}", path.display());
             if path.exists() {
                 match fs::read_to_string(&path) {
                     Ok(content) => match toml::from_str::<Config>(&content) {

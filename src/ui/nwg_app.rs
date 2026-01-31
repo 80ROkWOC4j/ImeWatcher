@@ -8,11 +8,12 @@ use native_windows_gui as nwg;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-use crate::config::{load_config, save_config, Config, KeyboardConfig};
+use crate::config::{load_config, save_config, Config, KeyboardConfig, ViaLangConfig};
 use crate::hid::{extract_device_metadata, DeviceMetadata, HidManager};
 use crate::ime::{LangId, LanguageTracker};
 use crate::system;
 use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
+use crate::via;
 
 const RAW_HANDLER_ID: usize = 0x10000;
 
@@ -449,6 +450,14 @@ impl AppUi {
 }
 
 impl AppInner {
+    fn apply_via_for_lang(&self, keyboard_id: &str, lang_key: &str, cfg: &ViaLangConfig) {
+        let model = self.model.borrow();
+        let Some(ref hm) = model.hid_manager else {
+            return;
+        };
+        via::apply_via_lang_config(hm, keyboard_id, lang_key, cfg);
+    }
+
     fn begin_model_update(&self) -> Option<ModelUpdateGuard<'_>> {
         if self.in_model_update.replace(true) {
             return None;
@@ -576,6 +585,8 @@ impl AppInner {
         }
 
         // Update current keyboard ID
+        let mut via_apply: Option<(String, String, ViaLangConfig)> = None;
+
         if idx < model.device_metadata.len() {
             let new_keyboard_id = model.device_metadata[idx].keyboard_id.clone();
             model.current_keyboard_id = Some(new_keyboard_id.clone());
@@ -590,6 +601,27 @@ impl AppInner {
 
             // Apply per-keyboard layer mapping immediately.
             self.refresh_layer_rows(&mut model, true);
+
+            // Best-effort: apply VIA runtime settings for current language.
+            let active_lang = model.ime_tracker.current();
+            let lang_key = format!("0x{:04x}", active_lang.0);
+            let cfg = model
+                .config
+                .keyboards
+                .get(&new_keyboard_id)
+                .and_then(|kb| kb.via.as_ref())
+                .and_then(|via_cfg| via_cfg.lang.get(&lang_key))
+                .cloned();
+
+            if let Some(cfg) = cfg {
+                via_apply = Some((new_keyboard_id.clone(), lang_key, cfg));
+            }
+        }
+
+        drop(model);
+
+        if let Some((keyboard_id, lang_key, cfg)) = via_apply {
+            self.apply_via_for_lang(&keyboard_id, &lang_key, &cfg);
         }
     }
 
@@ -673,6 +705,7 @@ impl AppInner {
                     pid: 0,
                     usage_page: 0,
                     lang_layer: HashMap::new(),
+                    via: None,
                 });
 
             // Update layer mapping
@@ -746,7 +779,7 @@ impl AppInner {
             y_pos: i32,
         }
 
-        let (changed, active_lang, new_rows, do_layer_switch) = {
+        let (changed, active_lang, new_rows, do_layer_switch, via_apply) = {
             let mut model = self.model.borrow_mut();
             let changed = model.ime_tracker.check_and_update();
             let active_lang = model.ime_tracker.current();
@@ -772,7 +805,25 @@ impl AppInner {
             // Sync is always enabled now.
             let do_layer_switch = changed;
 
-            (changed, active_lang, new_rows, do_layer_switch)
+            let via_apply = if changed {
+                let keyboard_id = model.current_keyboard_id.clone();
+                let lang_key = format!("0x{:04x}", active_lang.0);
+                let cfg = keyboard_id
+                    .as_ref()
+                    .and_then(|id| model.config.keyboards.get(id))
+                    .and_then(|kb| kb.via.as_ref())
+                    .and_then(|via_cfg| via_cfg.lang.get(&lang_key))
+                    .cloned();
+
+                match (keyboard_id, cfg) {
+                    (Some(id), Some(cfg)) => Some((id, lang_key, cfg)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            (changed, active_lang, new_rows, do_layer_switch, via_apply)
         };
 
         if changed {
@@ -858,6 +909,10 @@ impl AppInner {
                     }
                 }
             }
+        }
+
+        if let Some((keyboard_id, lang_key, cfg)) = via_apply {
+            self.apply_via_for_lang(&keyboard_id, &lang_key, &cfg);
         }
     }
 }

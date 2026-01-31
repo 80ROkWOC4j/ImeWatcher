@@ -7,6 +7,7 @@ mod logging;
 mod system;
 mod ui;
 mod utils;
+mod via;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;

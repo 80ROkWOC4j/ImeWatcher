@@ -159,7 +159,7 @@ impl HidManager {
             .map_err(|e| format!("Failed to open device: {e}"))
     }
 
-    fn open_keyboard_api(&self) -> Result<KeyboardApi, String> {
+    pub(crate) fn open_keyboard_api(&self) -> Result<KeyboardApi, String> {
         let sel = self.selected()?;
         KeyboardApi::new(sel.vendor_id, sel.product_id, sel.usage_page).map_err(|e| e.to_string())
     }
