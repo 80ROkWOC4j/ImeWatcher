@@ -1,9 +1,8 @@
+use log::{LevelFilter, Log, Metadata, Record};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-
-use log::{LevelFilter, Log, Metadata, Record};
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 static LOGGER: OnceLock<FileLogger> = OnceLock::new();

@@ -20,9 +20,6 @@ const IMEWATCHER_STATUS_BAD_PAYLOAD: u8 = 0x02;
 pub struct DeviceMetadata {
     pub keyboard_id: String,
     pub label: String,
-    pub vid: u16,
-    pub pid: u16,
-    pub usage_page: u16,
 }
 
 /// Extract metadata from a HID device, generating a stable keyboard ID
@@ -55,13 +52,7 @@ pub fn extract_device_metadata(device: &DeviceInfo) -> DeviceMetadata {
         )
     };
 
-    DeviceMetadata {
-        keyboard_id,
-        label,
-        vid,
-        pid,
-        usage_page,
-    }
+    DeviceMetadata { keyboard_id, label }
 }
 
 /// FNV-1a 64-bit hash function for stable path-based IDs
@@ -75,33 +66,6 @@ fn fnv1a_64_hash(data: &[u8]) -> u64 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ViaLightingChannel {
-    Backlight,
-    RgbLight,
-    RgbMatrix,
-    LedMatrix,
-}
-
-impl ViaLightingChannel {
-    fn supports_speed(self) -> bool {
-        matches!(self, Self::RgbLight | Self::RgbMatrix | Self::LedMatrix)
-    }
-
-    fn supports_color(self) -> bool {
-        matches!(self, Self::RgbLight | Self::RgbMatrix)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct LightingSnapshot {
-    pub channel: ViaLightingChannel,
-    pub brightness: u8,
-    pub effect: u8,
-    pub effect_speed: Option<u8>,
-    pub color_hs: Option<(u8, u8)>,
 }
 
 #[derive(Clone, Debug)]
@@ -164,123 +128,6 @@ impl HidManager {
         KeyboardApi::new(sel.vendor_id, sel.product_id, sel.usage_page).map_err(|e| e.to_string())
     }
 
-    pub fn capture_lighting_snapshot(&self) -> Result<LightingSnapshot, String> {
-        let api = self.open_keyboard_api()?;
-
-        // Prefer RGB matrix > RGB light > backlight > LED matrix.
-        let candidates = [
-            ViaLightingChannel::RgbMatrix,
-            ViaLightingChannel::RgbLight,
-            ViaLightingChannel::Backlight,
-            ViaLightingChannel::LedMatrix,
-        ];
-
-        for channel in candidates {
-            let brightness = match channel {
-                ViaLightingChannel::RgbMatrix => api.get_rgb_matrix_brightness(),
-                ViaLightingChannel::RgbLight => api.get_rgblight_brightness(),
-                ViaLightingChannel::Backlight => api.get_backlight_brightness(),
-                ViaLightingChannel::LedMatrix => api.get_led_matrix_brightness(),
-            };
-
-            let brightness = match brightness {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let effect = match channel {
-                ViaLightingChannel::RgbMatrix => api.get_rgb_matrix_effect().unwrap_or(0),
-                ViaLightingChannel::RgbLight => api.get_rgblight_effect().unwrap_or(0),
-                ViaLightingChannel::Backlight => api.get_backlight_effect().unwrap_or(0),
-                ViaLightingChannel::LedMatrix => api.get_led_matrix_effect().unwrap_or(0),
-            };
-
-            let effect_speed = if channel.supports_speed() {
-                match channel {
-                    ViaLightingChannel::RgbMatrix => api.get_rgb_matrix_effect_speed().ok(),
-                    ViaLightingChannel::RgbLight => api.get_rgblight_effect_speed().ok(),
-                    ViaLightingChannel::LedMatrix => api.get_led_matrix_effect_speed().ok(),
-                    ViaLightingChannel::Backlight => None,
-                }
-            } else {
-                None
-            };
-
-            let color_hs = if channel.supports_color() {
-                match channel {
-                    ViaLightingChannel::RgbMatrix => api.get_rgb_matrix_color().ok(),
-                    ViaLightingChannel::RgbLight => api.get_rgblight_color().ok(),
-                    ViaLightingChannel::Backlight | ViaLightingChannel::LedMatrix => None,
-                }
-            } else {
-                None
-            };
-
-            return Ok(LightingSnapshot {
-                channel,
-                brightness,
-                effect,
-                effect_speed,
-                color_hs,
-            });
-        }
-
-        Err("No supported VIA lighting channel found".to_string())
-    }
-
-    pub fn set_snapshot_brightness(
-        &self,
-        snapshot: &LightingSnapshot,
-        brightness: u8,
-    ) -> Result<(), String> {
-        let api = self.open_keyboard_api()?;
-
-        match snapshot.channel {
-            ViaLightingChannel::RgbMatrix => api.set_rgb_matrix_brightness(brightness),
-            ViaLightingChannel::RgbLight => api.set_rgblight_brightness(brightness),
-            ViaLightingChannel::Backlight => api.set_backlight_brightness(brightness),
-            ViaLightingChannel::LedMatrix => api.set_led_matrix_brightness(brightness),
-        }
-        .map_err(|e| e.to_string())
-    }
-
-    pub fn restore_lighting_snapshot(&self, snapshot: &LightingSnapshot) -> Result<(), String> {
-        let api = self.open_keyboard_api()?;
-
-        // Restore effect first (may enable/disable the lighting engine).
-        let _ = match snapshot.channel {
-            ViaLightingChannel::RgbMatrix => api.set_rgb_matrix_effect(snapshot.effect),
-            ViaLightingChannel::RgbLight => api.set_rgblight_effect(snapshot.effect),
-            ViaLightingChannel::Backlight => api.set_backlight_effect(snapshot.effect),
-            ViaLightingChannel::LedMatrix => api.set_led_matrix_effect(snapshot.effect),
-        };
-
-        if let Some(speed) = snapshot.effect_speed {
-            let _ = match snapshot.channel {
-                ViaLightingChannel::RgbMatrix => api.set_rgb_matrix_effect_speed(speed),
-                ViaLightingChannel::RgbLight => api.set_rgblight_effect_speed(speed),
-                ViaLightingChannel::LedMatrix => api.set_led_matrix_effect_speed(speed),
-                ViaLightingChannel::Backlight => Ok(()),
-            };
-        }
-
-        if let Some((h, s)) = snapshot.color_hs {
-            let _ = match snapshot.channel {
-                ViaLightingChannel::RgbMatrix => api.set_rgb_matrix_color(h, s),
-                ViaLightingChannel::RgbLight => api.set_rgblight_color(h, s),
-                ViaLightingChannel::Backlight | ViaLightingChannel::LedMatrix => Ok(()),
-            };
-        }
-
-        match snapshot.channel {
-            ViaLightingChannel::RgbMatrix => api.set_rgb_matrix_brightness(snapshot.brightness),
-            ViaLightingChannel::RgbLight => api.set_rgblight_brightness(snapshot.brightness),
-            ViaLightingChannel::Backlight => api.set_backlight_brightness(snapshot.brightness),
-            ViaLightingChannel::LedMatrix => api.set_led_matrix_brightness(snapshot.brightness),
-        }
-        .map_err(|e| e.to_string())
-    }
-
     pub fn get_protocol_version(&self) -> Result<u16, String> {
         self.open_keyboard_api()?
             .get_protocol_version()
@@ -300,7 +147,7 @@ impl HidManager {
 
         let mut data = [0u8; 33];
         data[0] = 0x00; // Report ID
-                        // QMK-side sees 32 bytes starting from data[1]
+        // QMK-side sees 32 bytes starting from data[1]
         data[1] = IMEWATCHER_CMD;
         data[2..6].copy_from_slice(&IMEWATCHER_SIG);
         data[6] = IMEWATCHER_OP_SET_DEFAULT_LAYER;
@@ -325,10 +172,10 @@ impl HidManager {
                     data[1], data[6], data[7]
                 );
                 warn!("rawhid_no_response (missing firmware handler or wrong interface/usage)");
-                return Err(
+                Err(
                     "No response from device (firmware might not include ImeWatcher Raw HID handler)"
                         .to_string(),
-                );
+                )
             }
             Ok(_n) => {
                 // buf[0] is report id; firmware payload starts at buf[1]

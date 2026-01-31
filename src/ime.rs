@@ -1,3 +1,4 @@
+use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -10,8 +11,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SendMessageW, WM_IME_CONTROL,
 };
-
-use log::debug;
 
 // IMC_GETOPENSTATUS, 혹은 IMC_GETCONVERSIONMODE 사용해야 함
 // 현재 windows crate에서 해당 값 찾을 수 없어 여기서 정의
@@ -48,7 +47,7 @@ impl Display for LangId {
 pub struct LanguageTracker {
     current: Option<LangId>,
     previous: Option<LangId>,
-    pub detected_langs: HashSet<LangId>,
+    detected_lang_ids: HashSet<LangId>,
 }
 
 impl LanguageTracker {
@@ -59,14 +58,14 @@ impl LanguageTracker {
         Self {
             current: None,
             previous: None,
-            detected_langs,
+            detected_lang_ids: detected_langs,
         }
     }
 
     fn update(&mut self, new_lang: LangId) {
         self.previous = self.current;
         self.current = Some(new_lang);
-        self.detected_langs.insert(new_lang);
+        self.detected_lang_ids.insert(new_lang);
         if self.is_changed() {
             debug!("current_lang={}", new_lang);
         }
@@ -108,6 +107,10 @@ impl LanguageTracker {
         }
 
         self.is_changed()
+    }
+
+    pub fn detected_lang_ids(&self) -> &HashSet<LangId> {
+        &self.detected_lang_ids
     }
 }
 

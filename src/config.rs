@@ -1,4 +1,4 @@
-use log::warn;
+use log::{info, warn};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -38,7 +38,7 @@ fn default_version() -> u32 {
 }
 
 /// Per-keyboard configuration
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct KeyboardConfig {
     #[serde(default)]
     pub label: String,
@@ -56,18 +56,6 @@ pub struct KeyboardConfig {
     pub lang_layer: HashMap<String, u8>,
 }
 
-impl Default for KeyboardConfig {
-    fn default() -> Self {
-        Self {
-            label: String::new(),
-            vid: 0,
-            pid: 0,
-            usage_page: 0,
-            lang_layer: HashMap::new(),
-        }
-    }
-}
-
 /// Get the path to the config file (in the same directory as the executable)
 fn config_path() -> Option<PathBuf> {
     std::env::current_exe()
@@ -82,7 +70,10 @@ pub fn load_config() -> Config {
             if path.exists() {
                 match fs::read_to_string(&path) {
                     Ok(content) => match toml::from_str::<Config>(&content) {
-                        Ok(config) => config,
+                        Ok(config) => {
+                            info!("Loaded config file");
+                            config
+                        }
                         Err(e) => {
                             warn!("Failed to parse config file: {}", e);
                             Config::default()
@@ -126,17 +117,4 @@ pub fn save_config(config: &Config) -> Result<(), String> {
     fs::rename(&temp_path, &path).map_err(|e| format!("Failed to rename config file: {}", e))?;
 
     Ok(())
-}
-
-/// Get or create keyboard config for a given keyboard_id
-pub fn get_keyboard_config<'a>(
-    config: &'a mut Config,
-    keyboard_id: &str,
-) -> &'a mut KeyboardConfig {
-    config.keyboards.entry(keyboard_id.to_string()).or_default()
-}
-
-/// Update last selected keyboard
-pub fn set_last_keyboard(config: &mut Config, keyboard_id: String) {
-    config.last_keyboard_id = Some(keyboard_id);
 }

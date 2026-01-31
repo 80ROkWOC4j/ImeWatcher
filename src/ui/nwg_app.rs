@@ -1,18 +1,16 @@
+use crate::config::{Config, KeyboardConfig, load_config, save_config};
+use crate::hid::{DeviceMetadata, HidManager, extract_device_metadata};
+use crate::ime::{LangId, LanguageTracker};
+use crate::system;
+use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
+use log::{debug, info, warn};
+use native_windows_gui as nwg;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
-
-use log::{debug, info, warn};
-use native_windows_gui as nwg;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-
-use crate::config::{load_config, save_config, Config, KeyboardConfig};
-use crate::hid::{extract_device_metadata, DeviceMetadata, HidManager};
-use crate::ime::{LangId, LanguageTracker};
-use crate::system;
-use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
 
 const RAW_HANDLER_ID: usize = 0x10000;
 
@@ -298,7 +296,7 @@ impl AppUi {
         if let Some(ref mut hm) = hid_manager {
             devices = hm.list_devices();
             // Extract metadata for each device
-            device_metadata = devices.iter().map(|d| extract_device_metadata(d)).collect();
+            device_metadata = devices.iter().map(extract_device_metadata).collect();
         }
 
         // Determine which device to select
@@ -307,7 +305,10 @@ impl AppUi {
 
         if let Some(ref last_id) = config.last_keyboard_id {
             // Try to find the last used keyboard
-            if let Some(idx) = device_metadata.iter().position(|m| &m.keyboard_id == last_id) {
+            if let Some(idx) = device_metadata
+                .iter()
+                .position(|m| &m.keyboard_id == last_id)
+            {
                 selected_index = idx;
                 current_keyboard_id = Some(last_id.clone());
                 info!("Restored last keyboard: {}", last_id);
@@ -317,12 +318,12 @@ impl AppUi {
         }
 
         // Select the device
-        if let Some(ref mut hm) = hid_manager {
-            if let Some(device) = devices.get(selected_index) {
-                hm.select_device(device);
-                if current_keyboard_id.is_none() && selected_index < device_metadata.len() {
-                    current_keyboard_id = Some(device_metadata[selected_index].keyboard_id.clone());
-                }
+        if let Some(ref mut hm) = hid_manager
+            && let Some(device) = devices.get(selected_index)
+        {
+            hm.select_device(device);
+            if current_keyboard_id.is_none() && selected_index < device_metadata.len() {
+                current_keyboard_id = Some(device_metadata[selected_index].keyboard_id.clone());
             }
         }
 
@@ -332,10 +333,7 @@ impl AppUi {
             .and_then(|hm| hm.get_layer_count().ok())
             .unwrap_or(0);
 
-        let device_items: Vec<String> = device_metadata
-            .iter()
-            .map(|m| m.label.clone())
-            .collect();
+        let device_items: Vec<String> = device_metadata.iter().map(|m| m.label.clone()).collect();
         device_combo.set_collection(device_items);
         if !devices.is_empty() {
             device_combo.set_selection(Some(selected_index));
@@ -529,10 +527,10 @@ impl AppInner {
                 None
             }
         };
-        if let Some(cfg) = config_to_save {
-            if let Err(e) = save_config(&cfg) {
-                warn!("Failed to save config on exit: {}", e);
-            }
+        if let Some(cfg) = config_to_save
+            && let Err(e) = save_config(&cfg)
+        {
+            warn!("Failed to save config on exit: {}", e);
         }
 
         if let Some(raw) = self.raw_handler.borrow_mut().take() {
@@ -564,13 +562,13 @@ impl AppInner {
             }
 
             // Fetch the layer count on device change (event-driven; no polling).
-            if let Ok(count) = hm.get_layer_count() {
-                if model.layer_count != count {
-                    debug!("layer_count_changed={}", count);
-                    model.layer_count = count;
-                    for row in &mut model.lang_rows {
-                        row.populated = false;
-                    }
+            if let Ok(count) = hm.get_layer_count()
+                && model.layer_count != count
+            {
+                debug!("layer_count_changed={}", count);
+                model.layer_count = count;
+                for row in &mut model.lang_rows {
+                    row.populated = false;
                 }
             }
         }
@@ -622,9 +620,7 @@ impl AppInner {
 
             if force_selection_update || !was_populated {
                 let lang_key = format!("0x{:04x}", row.lang_id.0);
-                let selection = lang_layer
-                    .get(&lang_key)
-                    .map_or(0, |v| (*v + 1) as usize);
+                let selection = lang_layer.get(&lang_key).map_or(0, |v| (*v + 1) as usize);
                 row.combo.set_selection(Some(selection));
             }
         }
@@ -721,15 +717,13 @@ impl AppInner {
         // Release re-entrancy guard before doing IO.
         drop(guard);
 
-        if should_save {
-            if let Err(e) = save_config(&config) {
-                warn!("Failed to save config: {}", e);
+        if should_save && let Err(e) = save_config(&config) {
+            warn!("Failed to save config: {}", e);
 
-                // Retry later.
-                let mut model = self.model.borrow_mut();
-                model.config_dirty = true;
-                model.config_save_deadline = Some(Instant::now() + Duration::from_millis(1000));
-            }
+            // Retry later.
+            let mut model = self.model.borrow_mut();
+            model.config_dirty = true;
+            model.config_save_deadline = Some(Instant::now() + Duration::from_millis(1000));
         }
     }
 
@@ -751,16 +745,11 @@ impl AppInner {
             let changed = model.ime_tracker.check_and_update();
             let active_lang = model.ime_tracker.current();
 
-            let current_ui_langs: HashSet<LangId> =
-                model.lang_rows.iter().map(|r| r.lang_id).collect();
-            let detected_langs: Vec<LangId> =
-                model.ime_tracker.detected_langs.iter().copied().collect();
-
             let base_index = model.lang_rows.len() as i32;
             let mut new_rows = Vec::new();
             let mut added = 0i32;
-            for lang_id in detected_langs {
-                if current_ui_langs.contains(&lang_id) {
+            for &lang_id in model.ime_tracker.detected_lang_ids() {
+                if model.lang_rows.iter().any(|r| r.lang_id == lang_id) {
                     continue;
                 }
                 let row_index = base_index + added;
@@ -849,12 +838,15 @@ impl AppInner {
                             active_lang, target_layer
                         );
                         match hm.set_layer_state(*target_layer) {
-                        Ok(_) => info!("switched_layer={}", target_layer),
-                        Err(e) => warn!("set_layer_state_error={}", e),
+                            Ok(_) => info!("switched_layer={}", target_layer),
+                            Err(e) => warn!("set_layer_state_error={}", e),
                         }
                     }
                     None => {
-                        debug!("layer_switch_skipped lang={} reason=no_mapping", active_lang);
+                        debug!(
+                            "layer_switch_skipped lang={} reason=no_mapping",
+                            active_lang
+                        );
                     }
                 }
             }
