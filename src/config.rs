@@ -53,9 +53,6 @@ pub struct KeyboardConfig {
     pub usage_page: u16,
 
     #[serde(default)]
-    pub sync_enabled: bool,
-
-    #[serde(default)]
     pub lang_layer: HashMap<String, u8>,
 }
 
@@ -66,7 +63,6 @@ impl Default for KeyboardConfig {
             vid: 0,
             pid: 0,
             usage_page: 0,
-            sync_enabled: false,
             lang_layer: HashMap::new(),
         }
     }

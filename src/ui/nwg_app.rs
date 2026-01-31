@@ -18,10 +18,8 @@ const RAW_HANDLER_ID: usize = 0x10000;
 
 const UI_PADDING: i32 = 16;
 const UI_COL_GAP: i32 = 16;
-const UI_ROW_GAP: i32 = 12;
 const UI_COL_W: i32 = 236;
 const UI_ROW_H: i32 = 32;
-const UI_CHECKBOX_H: i32 = 24;
 const UI_SECTION_TITLE_H: i32 = 18;
 const UI_SECTION_TITLE_GAP: i32 = 2;
 const UI_HEADER_H: i32 = 20;
@@ -41,7 +39,6 @@ struct Layout {
     col2_x: i32,
     device_label_y: i32,
     device_combo_y: i32,
-    sync_checkbox_y: i32,
     header_y: i32,
     rows_start_y: i32,
 }
@@ -55,8 +52,7 @@ fn layout() -> Layout {
 
     let device_label_y = UI_PADDING;
     let device_combo_y = UI_PADDING + UI_SECTION_TITLE_H + UI_SECTION_TITLE_GAP;
-    let sync_checkbox_y = device_combo_y + UI_ROW_H + UI_ROW_GAP;
-    let header_y = sync_checkbox_y + UI_CHECKBOX_H + UI_SECTION_GAP;
+    let header_y = device_combo_y + UI_ROW_H + UI_SECTION_GAP;
     let rows_start_y = header_y + UI_HEADER_H + UI_TABLE_ROWS_GAP_TOP;
 
     Layout {
@@ -66,7 +62,6 @@ fn layout() -> Layout {
         col2_x,
         device_label_y,
         device_combo_y,
-        sync_checkbox_y,
         header_y,
         rows_start_y,
     }
@@ -92,7 +87,7 @@ struct AppModel {
     device_metadata: Vec<DeviceMetadata>,
 
     layer_count: u8,
-    // Note: sync_enabled and layer_config are now per-keyboard in config
+    // Note: language->layer mapping is per-keyboard in config
     lang_rows: Vec<LangRow>,
 
     // Configuration
@@ -132,7 +127,6 @@ struct AppInner {
     #[allow(dead_code)]
     device_label: nwg::Label,
     device_combo: nwg::ComboBox<String>,
-    sync_checkbox: nwg::CheckBox,
     #[allow(dead_code)]
     header_lang: nwg::Label,
     #[allow(dead_code)]
@@ -254,15 +248,6 @@ impl AppUi {
             .font(font_ui.as_ref())
             .build(&mut device_combo)?;
 
-        let mut sync_checkbox = nwg::CheckBox::default();
-        nwg::CheckBox::builder()
-            .parent(&window)
-            .position((l.col1_x, l.sync_checkbox_y))
-            .size((l.content_w, UI_CHECKBOX_H))
-            .text("Sync keyboard layer with IME")
-            .font(font_ui.as_ref())
-            .build(&mut sync_checkbox)?;
-
         let mut header_lang = nwg::Label::default();
         nwg::Label::builder()
             .parent(&window)
@@ -343,18 +328,6 @@ impl AppUi {
             device_combo.set_selection(Some(selected_index));
         }
 
-        // Set initial sync checkbox state from config
-        if let Some(ref keyboard_id) = current_keyboard_id {
-            if let Some(kb_config) = config.keyboards.get(keyboard_id) {
-                let sync_state = if kb_config.sync_enabled {
-                    nwg::CheckBoxState::Checked
-                } else {
-                    nwg::CheckBoxState::Unchecked
-                };
-                sync_checkbox.set_check_state(sync_state);
-            }
-        }
-
         // Update global hwnd for hook callbacks
         if let Some(hwnd) = window.handle.hwnd() {
             system::set_app_hwnd(HWND(hwnd as _));
@@ -373,7 +346,6 @@ impl AppUi {
             window,
             device_label,
             device_combo,
-            sync_checkbox,
             header_lang,
             header_layer,
             config_save_timer,
@@ -519,9 +491,6 @@ impl AppInner {
                 // Background app: closing the window hides it.
                 self.window.set_visible(false);
             }
-            E::OnButtonClick if handle == self.sync_checkbox => {
-                self.toggle_sync();
-            }
             E::OnComboxBoxSelection if handle == self.device_combo => {
                 self.on_device_selection();
             }
@@ -565,54 +534,6 @@ impl AppInner {
         nwg::stop_thread_dispatch();
     }
 
-    fn toggle_sync(&self) {
-        let mut model = self.model.borrow_mut();
-
-        // Get current keyboard ID (clone to avoid borrow issues)
-        let keyboard_id = match model.current_keyboard_id.clone() {
-            Some(id) => id,
-            None => return,
-        };
-
-        // Find device metadata for label
-        let label = model
-            .device_metadata
-            .iter()
-            .find(|m| m.keyboard_id == keyboard_id)
-            .map(|m| m.label.clone())
-            .unwrap_or_default();
-
-        // Get or create keyboard config
-        let kb_config = model
-            .config
-            .keyboards
-            .entry(keyboard_id.clone())
-            .or_insert_with(|| KeyboardConfig {
-                label,
-                vid: 0,
-                pid: 0,
-                usage_page: 0,
-                sync_enabled: false,
-                lang_layer: HashMap::new(),
-            });
-
-        // Toggle sync
-        kb_config.sync_enabled = !kb_config.sync_enabled;
-        let new_state = kb_config.sync_enabled;
-
-        // Update UI
-        let checkbox_state = if new_state {
-            nwg::CheckBoxState::Checked
-        } else {
-            nwg::CheckBoxState::Unchecked
-        };
-        self.sync_checkbox.set_check_state(checkbox_state);
-        info!("sync_enabled={} for keyboard {}", new_state, keyboard_id);
-
-        model.config_dirty = true;
-        model.config_save_deadline = Some(Instant::now() + CONFIG_SAVE_DEBOUNCE);
-    }
-
     fn on_device_selection(&self) {
         let Some(_guard) = self.begin_model_update() else {
             return;
@@ -648,21 +569,6 @@ impl AppInner {
 
             // Update last_keyboard_id in config
             model.config.last_keyboard_id = Some(new_keyboard_id.clone());
-
-            // Load sync state for this keyboard
-            let sync_enabled = model
-                .config
-                .keyboards
-                .get(&new_keyboard_id)
-                .map(|kb| kb.sync_enabled)
-                .unwrap_or(false);
-
-            let checkbox_state = if sync_enabled {
-                nwg::CheckBoxState::Checked
-            } else {
-                nwg::CheckBoxState::Unchecked
-            };
-            self.sync_checkbox.set_check_state(checkbox_state);
 
             model.config_dirty = true;
             model.config_save_deadline = Some(Instant::now() + CONFIG_SAVE_DEBOUNCE);
@@ -753,7 +659,6 @@ impl AppInner {
                     vid: 0,
                     pid: 0,
                     usage_page: 0,
-                    sync_enabled: false,
                     lang_layer: HashMap::new(),
                 });
 
@@ -828,18 +733,10 @@ impl AppInner {
             y_pos: i32,
         }
 
-        let (changed, active_lang, sync_enabled, new_rows, do_layer_switch) = {
+        let (changed, active_lang, new_rows, do_layer_switch) = {
             let mut model = self.model.borrow_mut();
             let changed = model.ime_tracker.check_and_update();
             let active_lang = model.ime_tracker.current();
-
-            // Get per-keyboard sync_enabled from config
-            let sync_enabled = model
-                .current_keyboard_id
-                .as_ref()
-                .and_then(|id| model.config.keyboards.get(id))
-                .map(|kb| kb.sync_enabled)
-                .unwrap_or(false);
 
             let current_ui_langs: HashSet<LangId> =
                 model.lang_rows.iter().map(|r| r.lang_id).collect();
@@ -859,15 +756,16 @@ impl AppInner {
                 added += 1;
             }
 
-            let do_layer_switch = changed && sync_enabled;
+            // Sync is always enabled now.
+            let do_layer_switch = changed;
 
-            (changed, active_lang, sync_enabled, new_rows, do_layer_switch)
+            (changed, active_lang, new_rows, do_layer_switch)
         };
 
         if changed {
             info!(
-                "ime_changed active_lang={} sync_enabled={} do_layer_switch={}",
-                active_lang, sync_enabled, do_layer_switch
+                "ime_changed active_lang={} do_layer_switch={}",
+                active_lang, do_layer_switch
             );
         } else {
             debug!(
