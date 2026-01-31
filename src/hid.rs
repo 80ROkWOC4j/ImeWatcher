@@ -15,6 +15,68 @@ const IMEWATCHER_STATUS_OK: u8 = 0x00;
 const IMEWATCHER_STATUS_BAD_LAYER: u8 = 0x01;
 const IMEWATCHER_STATUS_BAD_PAYLOAD: u8 = 0x02;
 
+/// Device metadata including stable keyboard ID
+#[derive(Clone, Debug)]
+pub struct DeviceMetadata {
+    pub keyboard_id: String,
+    pub label: String,
+    pub vid: u16,
+    pub pid: u16,
+    pub usage_page: u16,
+}
+
+/// Extract metadata from a HID device, generating a stable keyboard ID
+pub fn extract_device_metadata(device: &DeviceInfo) -> DeviceMetadata {
+    let vid = device.vendor_id();
+    let pid = device.product_id();
+    let usage_page = device.usage_page();
+
+    // Build human-readable label
+    let manufacturer = device.manufacturer_string().unwrap_or("Unknown");
+    let product = device.product_string().unwrap_or("Device");
+    let label = format!("{} {} ({:04x}:{:04x})", manufacturer, product, vid, pid);
+
+    // Generate keyboard ID
+    let keyboard_id = if let Some(serial) = device.serial_number() {
+        if !serial.is_empty() {
+            format!("{:04x}:{:04x}:{:04x}:sn:{}", vid, pid, usage_page, serial)
+        } else {
+            let path_hash = fnv1a_64_hash(device.path().to_bytes());
+            format!(
+                "{:04x}:{:04x}:{:04x}:path:{:016x}",
+                vid, pid, usage_page, path_hash
+            )
+        }
+    } else {
+        let path_hash = fnv1a_64_hash(device.path().to_bytes());
+        format!(
+            "{:04x}:{:04x}:{:04x}:path:{:016x}",
+            vid, pid, usage_page, path_hash
+        )
+    };
+
+    DeviceMetadata {
+        keyboard_id,
+        label,
+        vid,
+        pid,
+        usage_page,
+    }
+}
+
+/// FNV-1a 64-bit hash function for stable path-based IDs
+fn fnv1a_64_hash(data: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ViaLightingChannel {
     Backlight,

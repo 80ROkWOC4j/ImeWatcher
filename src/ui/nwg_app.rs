@@ -8,7 +8,8 @@ use native_windows_gui as nwg;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-use crate::hid::{HidManager, LightingSnapshot};
+use crate::config::{load_config, save_config, Config, KeyboardConfig};
+use crate::hid::{extract_device_metadata, DeviceMetadata, HidManager, LightingSnapshot};
 use crate::ime::{LangId, LanguageTracker};
 use crate::system;
 use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
@@ -145,13 +146,17 @@ struct AppModel {
     ime_tracker: LanguageTracker,
     hid_manager: Option<HidManager>,
     devices: Vec<hidapi::DeviceInfo>,
+    device_metadata: Vec<DeviceMetadata>,
 
     layer_count: u8,
-    sync_enabled: bool,
-    layer_config: HashMap<LangId, Option<u8>>,
+    // Note: sync_enabled and layer_config are now per-keyboard in config
     lang_rows: Vec<LangRow>,
 
     lighting_anim: Option<LightingAnim>,
+
+    // Configuration
+    config: Config,
+    current_keyboard_id: Option<String>,
 }
 
 struct AppInner {
@@ -349,30 +354,62 @@ impl AppUi {
         // Initialize model
         let ime_tracker = LanguageTracker::new();
 
+        // Load configuration
+        let config = load_config();
+
         let mut hid_manager = HidManager::new().ok();
         let mut devices = Vec::new();
+        let mut device_metadata = Vec::new();
         if let Some(ref mut hm) = hid_manager {
             devices = hm.list_devices();
-            if let Some(first) = devices.first() {
-                hm.select_device(first);
+            // Extract metadata for each device
+            device_metadata = devices.iter().map(|d| extract_device_metadata(d)).collect();
+        }
+
+        // Determine which device to select
+        let mut selected_index = 0;
+        let mut current_keyboard_id = None;
+
+        if let Some(ref last_id) = config.last_keyboard_id {
+            // Try to find the last used keyboard
+            if let Some(idx) = device_metadata.iter().position(|m| &m.keyboard_id == last_id) {
+                selected_index = idx;
+                current_keyboard_id = Some(last_id.clone());
+                info!("Restored last keyboard: {}", last_id);
+            } else {
+                info!("Last keyboard {} not found, using first device", last_id);
             }
         }
 
-        let device_items = devices
+        // Select the device
+        if let Some(ref mut hm) = hid_manager {
+            if let Some(device) = devices.get(selected_index) {
+                hm.select_device(device);
+                if current_keyboard_id.is_none() && selected_index < device_metadata.len() {
+                    current_keyboard_id = Some(device_metadata[selected_index].keyboard_id.clone());
+                }
+            }
+        }
+
+        let device_items: Vec<String> = device_metadata
             .iter()
-            .map(|dev| {
-                format!(
-                    "{} {} ({:04x}:{:04x})",
-                    dev.manufacturer_string().unwrap_or("Unknown"),
-                    dev.product_string().unwrap_or("Device"),
-                    dev.vendor_id(),
-                    dev.product_id()
-                )
-            })
-            .collect::<Vec<_>>();
+            .map(|m| m.label.clone())
+            .collect();
         device_combo.set_collection(device_items);
         if !devices.is_empty() {
-            device_combo.set_selection(Some(0));
+            device_combo.set_selection(Some(selected_index));
+        }
+
+        // Set initial sync checkbox state from config
+        if let Some(ref keyboard_id) = current_keyboard_id {
+            if let Some(kb_config) = config.keyboards.get(keyboard_id) {
+                let sync_state = if kb_config.sync_enabled {
+                    nwg::CheckBoxState::Checked
+                } else {
+                    nwg::CheckBoxState::Unchecked
+                };
+                sync_checkbox.set_check_state(sync_state);
+            }
         }
 
         // Update global hwnd for hook callbacks
@@ -402,11 +439,12 @@ impl AppUi {
                 ime_tracker,
                 hid_manager,
                 devices,
+                device_metadata,
                 layer_count: 0,
-                sync_enabled: false,
-                layer_config: HashMap::new(),
                 lang_rows: Vec::new(),
                 lighting_anim: None,
+                config,
+                current_keyboard_id,
             }),
             in_model_update: Cell::new(false),
             handlers: RefCell::new(Vec::new()),
@@ -570,21 +608,60 @@ impl AppInner {
 
     fn toggle_sync(&self) {
         let mut model = self.model.borrow_mut();
-        model.sync_enabled = !model.sync_enabled;
-        let state = if model.sync_enabled {
+
+        // Get current keyboard ID (clone to avoid borrow issues)
+        let keyboard_id = match model.current_keyboard_id.clone() {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Find device metadata for label
+        let label = model
+            .device_metadata
+            .iter()
+            .find(|m| m.keyboard_id == keyboard_id)
+            .map(|m| m.label.clone())
+            .unwrap_or_default();
+
+        // Get or create keyboard config
+        let kb_config = model
+            .config
+            .keyboards
+            .entry(keyboard_id.clone())
+            .or_insert_with(|| KeyboardConfig {
+                label,
+                vid: 0,
+                pid: 0,
+                usage_page: 0,
+                sync_enabled: false,
+                lang_layer: HashMap::new(),
+            });
+
+        // Toggle sync
+        kb_config.sync_enabled = !kb_config.sync_enabled;
+        let new_state = kb_config.sync_enabled;
+
+        // Update UI
+        let checkbox_state = if new_state {
             nwg::CheckBoxState::Checked
         } else {
             nwg::CheckBoxState::Unchecked
         };
-        self.sync_checkbox.set_check_state(state);
-        info!("sync_enabled={}", model.sync_enabled);
+        self.sync_checkbox.set_check_state(checkbox_state);
+        info!("sync_enabled={} for keyboard {}", new_state, keyboard_id);
+
+        // Persist config
+        let config = model.config.clone();
+        drop(model);
+        if let Err(e) = save_config(&config) {
+            warn!("Failed to save config: {}", e);
+        }
     }
 
     fn on_device_selection(&self) {
         let idx = self.device_combo.selection().unwrap_or(0);
         let mut model = self.model.borrow_mut();
         let device = model.devices.get(idx).cloned();
-        let current_lang = model.ime_tracker.current();
 
         if let (Some(device), Some(ref mut hm)) = (device.as_ref(), model.hid_manager.as_mut()) {
             hm.select_device(device);
@@ -594,7 +671,41 @@ impl AppInner {
             }
         }
 
-        let _ = current_lang;
+        // Update current keyboard ID
+        if idx < model.device_metadata.len() {
+            let new_keyboard_id = model.device_metadata[idx].keyboard_id.clone();
+            model.current_keyboard_id = Some(new_keyboard_id.clone());
+
+            // Update last_keyboard_id in config
+            model.config.last_keyboard_id = Some(new_keyboard_id.clone());
+
+            // Load sync state for this keyboard
+            let sync_enabled = model
+                .config
+                .keyboards
+                .get(&new_keyboard_id)
+                .map(|kb| kb.sync_enabled)
+                .unwrap_or(false);
+
+            let checkbox_state = if sync_enabled {
+                nwg::CheckBoxState::Checked
+            } else {
+                nwg::CheckBoxState::Unchecked
+            };
+            self.sync_checkbox.set_check_state(checkbox_state);
+
+            // Persist config
+            if let Err(e) = save_config(&model.config) {
+                warn!("Failed to save config: {}", e);
+            }
+
+            info!("Selected keyboard: {}", new_keyboard_id);
+
+            // Refresh language rows to show per-keyboard mappings
+            for row in &mut model.lang_rows {
+                row.populated = false;
+            }
+        }
     }
 
     fn on_dynamic_combo_selection(&self, handle: &nwg::ControlHandle) {
@@ -615,11 +726,53 @@ impl AppInner {
             });
 
         if let Some((lang_id, target_layer)) = found {
-            model.layer_config.insert(lang_id, target_layer);
+            // Save to per-keyboard config
+            let keyboard_id = match model.current_keyboard_id.clone() {
+                Some(id) => id,
+                None => return,
+            };
+
+            // Find device metadata for label
+            let label = model
+                .device_metadata
+                .iter()
+                .find(|m| m.keyboard_id == keyboard_id)
+                .map(|m| m.label.clone())
+                .unwrap_or_default();
+
+            // Get or create keyboard config
+            let kb_config = model
+                .config
+                .keyboards
+                .entry(keyboard_id.clone())
+                .or_insert_with(|| KeyboardConfig {
+                    label,
+                    vid: 0,
+                    pid: 0,
+                    usage_page: 0,
+                    sync_enabled: false,
+                    lang_layer: HashMap::new(),
+                });
+
+            // Update layer mapping
+            let lang_key = format!("0x{:04x}", lang_id.0);
+            if let Some(layer) = target_layer {
+                kb_config.lang_layer.insert(lang_key, layer);
+            } else {
+                kb_config.lang_layer.remove(&lang_key);
+            }
+
             info!(
-                "set_layer_config lang={} target_layer={:?}",
-                lang_id, target_layer
+                "set_layer_config keyboard={} lang={} target_layer={:?}",
+                keyboard_id, lang_id, target_layer
             );
+
+            // Persist config
+            let config = model.config.clone();
+            drop(model);
+            if let Err(e) = save_config(&config) {
+                warn!("Failed to save config: {}", e);
+            }
         }
     }
 
@@ -647,8 +800,13 @@ impl AppInner {
             return;
         }
 
-        // `model` is a RefMut; clone to avoid borrow splitting issues while mutating `lang_rows`.
-        let layer_config_snapshot = model.layer_config.clone();
+        // Get per-keyboard layer config from config
+        let lang_layer = model
+            .current_keyboard_id
+            .as_ref()
+            .and_then(|id| model.config.keyboards.get(id))
+            .map(|kb| kb.lang_layer.clone())
+            .unwrap_or_default();
 
         for row in &mut model.lang_rows {
             if row.populated {
@@ -662,11 +820,11 @@ impl AppInner {
             }
             row.combo.set_collection(items);
 
-            let selection = layer_config_snapshot
-                .get(&row.lang_id)
-                .cloned()
-                .flatten()
-                .map_or(0, |v| (v + 1) as usize);
+            // Look up layer mapping from per-keyboard config
+            let lang_key = format!("0x{:04x}", row.lang_id.0);
+            let selection = lang_layer
+                .get(&lang_key)
+                .map_or(0, |v| (*v + 1) as usize);
             row.combo.set_selection(Some(selection));
             row.populated = true;
         }
@@ -719,7 +877,14 @@ impl AppInner {
             let mut model = self.model.borrow_mut();
             let changed = model.ime_tracker.check_and_update();
             let active_lang = model.ime_tracker.current();
-            let sync_enabled = model.sync_enabled;
+
+            // Get per-keyboard sync_enabled from config
+            let sync_enabled = model
+                .current_keyboard_id
+                .as_ref()
+                .and_then(|id| model.config.keyboards.get(id))
+                .map(|kb| kb.sync_enabled)
+                .unwrap_or(false);
 
             let current_ui_langs: HashSet<LangId> =
                 model.lang_rows.iter().map(|r| r.lang_id).collect();
@@ -739,7 +904,7 @@ impl AppInner {
                 added += 1;
             }
 
-            let do_layer_switch = changed && model.sync_enabled;
+            let do_layer_switch = changed && sync_enabled;
 
             (changed, active_lang, sync_enabled, new_rows, do_layer_switch)
         };
@@ -848,8 +1013,16 @@ impl AppInner {
         if do_layer_switch {
             let model = self.model.borrow();
             if let Some(ref hm) = model.hid_manager {
-                match model.layer_config.get(&active_lang) {
-                    Some(Some(target_layer)) => {
+                // Get per-keyboard layer mapping from config
+                let lang_layer = model
+                    .current_keyboard_id
+                    .as_ref()
+                    .and_then(|id| model.config.keyboards.get(id))
+                    .map(|kb| &kb.lang_layer);
+
+                let lang_key = format!("0x{:04x}", active_lang.0);
+                match lang_layer.and_then(|m| m.get(&lang_key)) {
+                    Some(target_layer) => {
                         info!(
                             "layer_switch_request lang={} target_layer={}",
                             active_lang, target_layer
@@ -858,9 +1031,6 @@ impl AppInner {
                         Ok(_) => info!("switched_layer={}", target_layer),
                         Err(e) => warn!("set_layer_state_error={}", e),
                         }
-                    }
-                    Some(None) => {
-                        debug!("layer_switch_skipped lang={} reason=explicit_none", active_lang);
                     }
                     None => {
                         debug!("layer_switch_skipped lang={} reason=no_mapping", active_lang);
