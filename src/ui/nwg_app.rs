@@ -16,8 +16,6 @@ use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
 
 const RAW_HANDLER_ID: usize = 0x10000;
 
-const LIGHTING_ANIM_TIMER_INTERVAL: Duration = Duration::from_millis(30);
-
 const UI_PADDING: i32 = 16;
 const UI_COL_GAP: i32 = 16;
 const UI_ROW_GAP: i32 = 12;
@@ -87,12 +85,6 @@ struct LangRow {
     populated: bool,
 }
 
-enum LightingAnimTick {
-    NoChange,
-    SetBrightness(u8),
-    Done,
-}
-
 struct AppModel {
     ime_tracker: LanguageTracker,
     hid_manager: Option<HidManager>,
@@ -146,8 +138,6 @@ struct AppInner {
     #[allow(dead_code)]
     header_layer: nwg::Label,
 
-    poll_timer: nwg::AnimationTimer,
-    lighting_anim_timer: nwg::AnimationTimer,
     config_save_timer: nwg::AnimationTimer,
 
     // State
@@ -291,20 +281,6 @@ impl AppUi {
             .font(font_header.as_ref())
             .build(&mut header_layer)?;
 
-        let mut poll_timer = nwg::AnimationTimer::default();
-        nwg::AnimationTimer::builder()
-            .parent(&window)
-            .interval(Duration::from_millis(1000))
-            .active(true)
-            .build(&mut poll_timer)?;
-
-        let mut lighting_anim_timer = nwg::AnimationTimer::default();
-        nwg::AnimationTimer::builder()
-            .parent(&window)
-            .interval(LIGHTING_ANIM_TIMER_INTERVAL)
-            .active(true)
-            .build(&mut lighting_anim_timer)?;
-
         let mut config_save_timer = nwg::AnimationTimer::default();
         nwg::AnimationTimer::builder()
             .parent(&window)
@@ -352,6 +328,12 @@ impl AppUi {
             }
         }
 
+        // Fetch the layer count once on startup (avoid periodic polling).
+        let initial_layer_count = hid_manager
+            .as_ref()
+            .and_then(|hm| hm.get_layer_count().ok())
+            .unwrap_or(0);
+
         let device_items: Vec<String> = device_metadata
             .iter()
             .map(|m| m.label.clone())
@@ -394,15 +376,13 @@ impl AppUi {
             sync_checkbox,
             header_lang,
             header_layer,
-            poll_timer,
-            lighting_anim_timer,
             config_save_timer,
             model: RefCell::new(AppModel {
                 ime_tracker,
                 hid_manager,
                 devices,
                 device_metadata,
-                layer_count: 0,
+                layer_count: initial_layer_count,
                 lang_rows: Vec::new(),
                 config,
                 current_keyboard_id,
@@ -417,8 +397,6 @@ impl AppUi {
         let ui = Self { inner };
         ui.bind_events();
         ui.sync_language_ui();
-        // Populate layer selections immediately (avoid waiting for poll timer).
-        ui.inner.on_timer_tick();
         Ok(ui)
     }
 
@@ -522,6 +500,8 @@ impl AppInner {
         use nwg::Event as E;
 
         match evt {
+            // Ignore re-entrant selection events triggered by programmatic ComboBox updates.
+            E::OnComboxBoxSelection if self.in_model_update.get() => {}
             E::OnContextMenu if handle == self.tray => {
                 let (x, y) = nwg::GlobalCursor::position();
                 self.tray_menu.popup(x, y);
@@ -547,9 +527,6 @@ impl AppInner {
             }
             E::OnComboxBoxSelection => {
                 self.on_dynamic_combo_selection(&handle);
-            }
-            E::OnTimerTick if handle == self.poll_timer => {
-                self.on_timer_tick();
             }
             E::OnTimerTick if handle == self.config_save_timer => {
                 self.on_config_save_tick();
@@ -637,6 +614,10 @@ impl AppInner {
     }
 
     fn on_device_selection(&self) {
+        let Some(_guard) = self.begin_model_update() else {
+            return;
+        };
+
         let idx = self.device_combo.selection().unwrap_or(0);
         let mut model = self.model.borrow_mut();
         let device = model.devices.get(idx).cloned();
@@ -646,6 +627,17 @@ impl AppInner {
             match hm.get_protocol_version() {
                 Ok(version) => debug!("via_protocol_version=0x{:04x}", version),
                 Err(e) => warn!("via_protocol_version_error={}", e),
+            }
+
+            // Fetch the layer count on device change (event-driven; no polling).
+            if let Ok(count) = hm.get_layer_count() {
+                if model.layer_count != count {
+                    debug!("layer_count_changed={}", count);
+                    model.layer_count = count;
+                    for row in &mut model.lang_rows {
+                        row.populated = false;
+                    }
+                }
             }
         }
 
@@ -783,29 +775,6 @@ impl AppInner {
         }
     }
 
-    fn on_timer_tick(&self) {
-        let Some(_guard) = self.begin_model_update() else {
-            return;
-        };
-        let mut model = self.model.borrow_mut();
-
-        // Poll device layer count (VIA) occasionally; avoid doing this in UI events like device switching.
-        if let Some(count) = model
-            .hid_manager
-            .as_ref()
-            .and_then(|hm| hm.get_layer_count().ok())
-            && model.layer_count != count
-        {
-            debug!("layer_count_changed={}", count);
-            model.layer_count = count;
-            for row in &mut model.lang_rows {
-                row.populated = false;
-            }
-        }
-
-        self.refresh_layer_rows(&mut model, false);
-    }
-
     fn on_config_save_tick(&self) {
         // Avoid re-entrancy issues while touching the model.
         let Some(guard) = self.begin_model_update() else {
@@ -940,6 +909,9 @@ impl AppInner {
         if !created_rows.is_empty() {
             let mut model = self.model.borrow_mut();
             model.lang_rows.extend(created_rows);
+
+            // Immediately populate newly-created rows (event-driven; no polling).
+            self.refresh_layer_rows(&mut model, false);
         }
 
         // Phase 3: apply accent updates.
