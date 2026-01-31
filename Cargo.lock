@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "imewatcher"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "embed-resource",
  "hidapi",
