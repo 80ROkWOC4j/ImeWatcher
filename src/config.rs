@@ -123,8 +123,7 @@ pub fn save_config(config: &Config) -> Result<(), String> {
             .map_err(|e| format!("Failed to create temp config file: {}", e))?;
         file.write_all(toml_string.as_bytes())
             .map_err(|e| format!("Failed to write config: {}", e))?;
-        file.sync_all()
-            .map_err(|e| format!("Failed to sync config: {}", e))?;
+        // Avoid sync_all here to keep UI responsive; config writes are best-effort.
     }
 
     // Atomically replace the old config file

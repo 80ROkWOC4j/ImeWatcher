@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::config::{load_config, save_config, Config, KeyboardConfig};
-use crate::hid::{extract_device_metadata, DeviceMetadata, HidManager, LightingSnapshot};
+use crate::hid::{extract_device_metadata, DeviceMetadata, HidManager};
 use crate::ime::{LangId, LanguageTracker};
 use crate::system;
 use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
@@ -17,9 +17,6 @@ use crate::utils::{PROGRAM_NAME, PROGRAM_WINDOW};
 const RAW_HANDLER_ID: usize = 0x10000;
 
 const LIGHTING_ANIM_TIMER_INTERVAL: Duration = Duration::from_millis(30);
-const LIGHTING_ANIM_PULSE_1: Duration = Duration::from_millis(45);
-const LIGHTING_ANIM_GAP: Duration = Duration::from_millis(70);
-const LIGHTING_ANIM_PULSE_2: Duration = Duration::from_millis(45);
 
 const UI_PADDING: i32 = 16;
 const UI_COL_GAP: i32 = 16;
@@ -35,6 +32,8 @@ const UI_TABLE_ROWS_GAP_TOP: i32 = 12;
 const UI_WINDOW_H: i32 = 420;
 const UI_LABEL_H: i32 = 22;
 const UI_COMBO_Y_OFFSET: i32 = -4;
+
+const CONFIG_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy)]
 struct Layout {
@@ -94,54 +93,6 @@ enum LightingAnimTick {
     Done,
 }
 
-struct LightingAnim {
-    steps: Vec<(u8, Duration)>,
-    index: usize,
-    next_at: Instant,
-
-    snapshot: LightingSnapshot,
-}
-
-impl LightingAnim {
-    fn new(snapshot: LightingSnapshot) -> Self {
-        let target_brightness = snapshot.brightness;
-        let steps = vec![
-            (0, LIGHTING_ANIM_PULSE_1),
-            (target_brightness, LIGHTING_ANIM_GAP),
-            (0, LIGHTING_ANIM_PULSE_2),
-            (target_brightness, Duration::from_millis(0)),
-        ];
-
-        let now = Instant::now();
-        let next_at = now + steps[0].1;
-        Self {
-            steps,
-            index: 0,
-            next_at,
-            snapshot,
-        }
-    }
-
-    fn current_brightness(&self) -> u8 {
-        self.steps.get(self.index).map(|(b, _)| *b).unwrap_or(0)
-    }
-
-    fn tick(&mut self) -> LightingAnimTick {
-        let now = Instant::now();
-        if now < self.next_at {
-            return LightingAnimTick::NoChange;
-        }
-
-        self.index += 1;
-        if self.index >= self.steps.len() {
-            return LightingAnimTick::Done;
-        }
-        let (b, dur) = self.steps[self.index];
-        self.next_at = now + dur;
-        LightingAnimTick::SetBrightness(b)
-    }
-}
-
 struct AppModel {
     ime_tracker: LanguageTracker,
     hid_manager: Option<HidManager>,
@@ -152,11 +103,13 @@ struct AppModel {
     // Note: sync_enabled and layer_config are now per-keyboard in config
     lang_rows: Vec<LangRow>,
 
-    lighting_anim: Option<LightingAnim>,
-
     // Configuration
     config: Config,
     current_keyboard_id: Option<String>,
+
+    // Config persistence (debounced)
+    config_dirty: bool,
+    config_save_deadline: Option<Instant>,
 }
 
 struct AppInner {
@@ -195,6 +148,7 @@ struct AppInner {
 
     poll_timer: nwg::AnimationTimer,
     lighting_anim_timer: nwg::AnimationTimer,
+    config_save_timer: nwg::AnimationTimer,
 
     // State
     model: RefCell<AppModel>,
@@ -351,6 +305,13 @@ impl AppUi {
             .active(true)
             .build(&mut lighting_anim_timer)?;
 
+        let mut config_save_timer = nwg::AnimationTimer::default();
+        nwg::AnimationTimer::builder()
+            .parent(&window)
+            .interval(Duration::from_millis(200))
+            .active(true)
+            .build(&mut config_save_timer)?;
+
         // Initialize model
         let ime_tracker = LanguageTracker::new();
 
@@ -435,6 +396,7 @@ impl AppUi {
             header_layer,
             poll_timer,
             lighting_anim_timer,
+            config_save_timer,
             model: RefCell::new(AppModel {
                 ime_tracker,
                 hid_manager,
@@ -442,9 +404,10 @@ impl AppUi {
                 device_metadata,
                 layer_count: 0,
                 lang_rows: Vec::new(),
-                lighting_anim: None,
                 config,
                 current_keyboard_id,
+                config_dirty: false,
+                config_save_deadline: None,
             }),
             in_model_update: Cell::new(false),
             handlers: RefCell::new(Vec::new()),
@@ -454,6 +417,8 @@ impl AppUi {
         let ui = Self { inner };
         ui.bind_events();
         ui.sync_language_ui();
+        // Populate layer selections immediately (avoid waiting for poll timer).
+        ui.inner.on_timer_tick();
         Ok(ui)
     }
 
@@ -586,14 +551,31 @@ impl AppInner {
             E::OnTimerTick if handle == self.poll_timer => {
                 self.on_timer_tick();
             }
-            E::OnTimerTick if handle == self.lighting_anim_timer => {
-                self.on_lighting_anim_tick();
+            E::OnTimerTick if handle == self.config_save_timer => {
+                self.on_config_save_tick();
             }
             _ => {}
         }
     }
 
     fn exit(&self) {
+        // Best-effort: flush pending config changes before exiting.
+        let config_to_save = {
+            let mut model = self.model.borrow_mut();
+            if model.config_dirty {
+                model.config_dirty = false;
+                model.config_save_deadline = None;
+                Some(model.config.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(cfg) = config_to_save {
+            if let Err(e) = save_config(&cfg) {
+                warn!("Failed to save config on exit: {}", e);
+            }
+        }
+
         if let Some(raw) = self.raw_handler.borrow_mut().take() {
             let _ = nwg::unbind_raw_event_handler(&raw);
         }
@@ -650,12 +632,8 @@ impl AppInner {
         self.sync_checkbox.set_check_state(checkbox_state);
         info!("sync_enabled={} for keyboard {}", new_state, keyboard_id);
 
-        // Persist config
-        let config = model.config.clone();
-        drop(model);
-        if let Err(e) = save_config(&config) {
-            warn!("Failed to save config: {}", e);
-        }
+        model.config_dirty = true;
+        model.config_save_deadline = Some(Instant::now() + CONFIG_SAVE_DEBOUNCE);
     }
 
     fn on_device_selection(&self) {
@@ -694,16 +672,49 @@ impl AppInner {
             };
             self.sync_checkbox.set_check_state(checkbox_state);
 
-            // Persist config
-            if let Err(e) = save_config(&model.config) {
-                warn!("Failed to save config: {}", e);
-            }
+            model.config_dirty = true;
+            model.config_save_deadline = Some(Instant::now() + CONFIG_SAVE_DEBOUNCE);
 
             info!("Selected keyboard: {}", new_keyboard_id);
 
-            // Refresh language rows to show per-keyboard mappings
-            for row in &mut model.lang_rows {
-                row.populated = false;
+            // Apply per-keyboard layer mapping immediately.
+            self.refresh_layer_rows(&mut model, true);
+        }
+    }
+
+    fn refresh_layer_rows(&self, model: &mut AppModel, force_selection_update: bool) {
+        let layer_count = model.layer_count;
+
+        let lang_layer = model
+            .current_keyboard_id
+            .as_ref()
+            .and_then(|id| model.config.keyboards.get(id))
+            .map(|kb| kb.lang_layer.clone())
+            .unwrap_or_default();
+
+        for row in &mut model.lang_rows {
+            let was_populated = row.populated;
+
+            if !row.populated {
+                if layer_count == 0 {
+                    // Layer count not known yet; can't populate items.
+                    continue;
+                }
+                let mut items = Vec::with_capacity((layer_count as usize) + 1);
+                items.push("Do not change".to_string());
+                for i in 0..layer_count {
+                    items.push(format!("Layer {}", i));
+                }
+                row.combo.set_collection(items);
+                row.populated = true;
+            }
+
+            if force_selection_update || !was_populated {
+                let lang_key = format!("0x{:04x}", row.lang_id.0);
+                let selection = lang_layer
+                    .get(&lang_key)
+                    .map_or(0, |v| (*v + 1) as usize);
+                row.combo.set_selection(Some(selection));
             }
         }
     }
@@ -767,12 +778,8 @@ impl AppInner {
                 keyboard_id, lang_id, target_layer
             );
 
-            // Persist config
-            let config = model.config.clone();
-            drop(model);
-            if let Err(e) = save_config(&config) {
-                warn!("Failed to save config: {}", e);
-            }
+            model.config_dirty = true;
+            model.config_save_deadline = Some(Instant::now() + CONFIG_SAVE_DEBOUNCE);
         }
     }
 
@@ -782,6 +789,7 @@ impl AppInner {
         };
         let mut model = self.model.borrow_mut();
 
+        // Poll device layer count (VIA) occasionally; avoid doing this in UI events like device switching.
         if let Some(count) = model
             .hid_manager
             .as_ref()
@@ -795,67 +803,45 @@ impl AppInner {
             }
         }
 
-        let layer_count = model.layer_count;
-        if layer_count == 0 {
-            return;
-        }
-
-        // Get per-keyboard layer config from config
-        let lang_layer = model
-            .current_keyboard_id
-            .as_ref()
-            .and_then(|id| model.config.keyboards.get(id))
-            .map(|kb| kb.lang_layer.clone())
-            .unwrap_or_default();
-
-        for row in &mut model.lang_rows {
-            if row.populated {
-                continue;
-            }
-
-            let mut items = Vec::with_capacity((layer_count as usize) + 1);
-            items.push("Do not change".to_string());
-            for i in 0..layer_count {
-                items.push(format!("Layer {}", i));
-            }
-            row.combo.set_collection(items);
-
-            // Look up layer mapping from per-keyboard config
-            let lang_key = format!("0x{:04x}", row.lang_id.0);
-            let selection = lang_layer
-                .get(&lang_key)
-                .map_or(0, |v| (*v + 1) as usize);
-            row.combo.set_selection(Some(selection));
-            row.populated = true;
-        }
+        self.refresh_layer_rows(&mut model, false);
     }
 
-    fn on_lighting_anim_tick(&self) {
-        let Some(_guard) = self.begin_model_update() else {
-            return;
-        };
-        let mut model = self.model.borrow_mut();
-
-        let (tick, snapshot) = if let Some(ref mut anim) = model.lighting_anim {
-            (anim.tick(), anim.snapshot.clone())
-        } else {
+    fn on_config_save_tick(&self) {
+        // Avoid re-entrancy issues while touching the model.
+        let Some(guard) = self.begin_model_update() else {
             return;
         };
 
-        match tick {
-            LightingAnimTick::NoChange => {}
-            LightingAnimTick::SetBrightness(b) => {
-                if let Some(ref hm) = model.hid_manager {
-                    let _ = hm.set_snapshot_brightness(&snapshot, b);
-                } else {
-                    model.lighting_anim = None;
-                }
+        let (should_save, config) = {
+            let mut model = self.model.borrow_mut();
+
+            if !model.config_dirty {
+                return;
             }
-            LightingAnimTick::Done => {
-                if let Some(ref hm) = model.hid_manager {
-                    let _ = hm.restore_lighting_snapshot(&snapshot);
-                }
-                model.lighting_anim = None;
+            let Some(deadline) = model.config_save_deadline else {
+                return;
+            };
+            if Instant::now() < deadline {
+                return;
+            }
+
+            model.config_dirty = false;
+            model.config_save_deadline = None;
+
+            (true, model.config.clone())
+        };
+
+        // Release re-entrancy guard before doing IO.
+        drop(guard);
+
+        if should_save {
+            if let Err(e) = save_config(&config) {
+                warn!("Failed to save config: {}", e);
+
+                // Retry later.
+                let mut model = self.model.borrow_mut();
+                model.config_dirty = true;
+                model.config_save_deadline = Some(Instant::now() + Duration::from_millis(1000));
             }
         }
     }
@@ -961,54 +947,6 @@ impl AppInner {
             let mut model = self.model.borrow_mut();
             self.update_language_rows_accent(&mut model, active_lang);
         }
-
-        // Phase 4: lighting animation (snapshot -> pulse brightness -> restore)
-        // if changed {
-        //     // If an animation is already running, restore first so the next snapshot is clean.
-        //     let prior_snapshot = {
-        //         let model = self.model.borrow();
-        //         model.lighting_anim.as_ref().map(|a| a.snapshot.clone())
-        //     };
-        //     if let Some(snapshot) = prior_snapshot {
-        //         {
-        //             let model = self.model.borrow();
-        //             if let Some(hm) = model.hid_manager.as_ref() {
-        //                 let _ = hm.restore_lighting_snapshot(&snapshot);
-        //             }
-        //         }
-        //         self.model.borrow_mut().lighting_anim = None;
-        //     }
-        //
-        //     let snapshot_res = {
-        //         let model = self.model.borrow();
-        //         model
-        //             .hid_manager
-        //             .as_ref()
-        //             .map(|hm| hm.capture_lighting_snapshot())
-        //     };
-        //
-        //     match snapshot_res {
-        //         Some(Ok(snapshot)) => {
-        //             let anim = LightingAnim::new(snapshot);
-        //             let initial = anim.current_brightness();
-        //
-        //             // Start at first step.
-        //             {
-        //                 let model = self.model.borrow();
-        //                 if let Some(hm) = model.hid_manager.as_ref() {
-        //                     let _ = hm.set_snapshot_brightness(&anim.snapshot, initial);
-        //                 }
-        //             }
-        //
-        //             {
-        //                 let mut model = self.model.borrow_mut();
-        //                 model.lighting_anim = Some(anim);
-        //             }
-        //         }
-        //         Some(Err(e)) => warn!("lighting_snapshot_error={}", e),
-        //         None => {}
-        //     }
-        // }
 
         if do_layer_switch {
             let model = self.model.borrow();
