@@ -149,19 +149,22 @@ impl AppUi {
     pub fn build() -> Result<Self, Box<dyn std::error::Error>> {
         let l = layout();
 
-        let mut icon = nwg::Icon::default();
-        // Prefer embedded icon resource (Windows .rc). Fall back to loading icon.ico next to the binary.
-        if nwg::Icon::builder()
-            .source_embed_str(Some("IDI_ICON1"))
-            .strict(true)
-            .build(&mut icon)
-            .is_err()
-        {
-            nwg::Icon::builder()
-                .source_file(Some("icon.ico"))
+        // Tray notification requires an icon, so ensure we always have one.
+        // Prefer embedded icon resource (Windows .rc). Fall back to a compile-time bundled icon.
+        let icon = {
+            let mut icon = nwg::Icon::default();
+            if nwg::Icon::builder()
+                .source_embed_str(Some("IDI_ICON1"))
                 .strict(true)
-                .build(&mut icon)?;
-        }
+                .build(&mut icon)
+                .is_ok()
+            {
+                icon
+            } else {
+                warn!("Embedded icon resource IDI_ICON1 not found; using bundled icon bytes");
+                nwg::Icon::from_bin(include_bytes!("../../icon.ico"))?
+            }
+        };
 
         // Font fallback:
         // - Prefer Segoe UI when available.

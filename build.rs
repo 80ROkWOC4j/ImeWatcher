@@ -8,5 +8,12 @@ fn main() {
     println!("cargo:rerun-if-changed=build/windows-manifest.rc");
     println!("cargo:rerun-if-changed=icon.ico");
 
-    let _ = embed_resource::compile("build/windows-manifest.rc", embed_resource::NONE);
+    let result = embed_resource::compile("build/windows-manifest.rc", embed_resource::NONE);
+    result.manifest_required().unwrap_or_else(|e| {
+        panic!(
+            "Windows resource embedding failed ({e}). \
+This breaks single-exe distribution (icon/manifest may be missing). \
+Install MSVC + Windows SDK (rc.exe/llvm-rc available) and rebuild."
+        )
+    });
 }
